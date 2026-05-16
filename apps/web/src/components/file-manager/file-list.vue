@@ -34,6 +34,8 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 
+type CheckboxState = boolean | 'indeterminate'
+
 const sortedEntries = computed(() => {
   const dirs = props.entries
     .filter(e => e.isDir)
@@ -80,8 +82,12 @@ function toggleEntry(entry: HandlersFsFileInfo) {
   setEntrySelected(entry, !isSelected(entry))
 }
 
-function toggleAll(checked: boolean | 'indeterminate') {
+function toggleAll(checked: CheckboxState) {
   emit('selectAll', checked === true)
+}
+
+function handleCheckboxUpdate(entry: HandlersFsFileInfo, checked: CheckboxState) {
+  setEntrySelected(entry, checked === true)
 }
 </script>
 
@@ -116,10 +122,10 @@ function toggleAll(checked: boolean | 'indeterminate') {
           @click.stop
         >
           <Checkbox
-            :checked="allSelectedState"
+            :model-value="allSelectedState"
             :disabled="selectionDisabled || selectableEntries.length === 0"
             :aria-label="t('bots.files.selectAll')"
-            @update:checked="toggleAll"
+            @update:model-value="toggleAll"
           />
         </div>
         <div class="flex-1">
@@ -149,10 +155,10 @@ function toggleAll(checked: boolean | 'indeterminate') {
               @click.stop
             >
               <Checkbox
-                :checked="isSelected(entry)"
+                :model-value="isSelected(entry)"
                 :disabled="selectionDisabled || !entry.path"
                 :aria-label="t('bots.files.selectItem', { name: entry.name ?? '' })"
-                @update:checked="checked => setEntrySelected(entry, checked === true)"
+                @update:model-value="checked => handleCheckboxUpdate(entry, checked)"
               />
             </div>
             <div class="flex flex-1 items-center gap-2 min-w-0">
