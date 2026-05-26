@@ -65,9 +65,21 @@ func (d *Dispatcher) HandleComment(ctx context.Context, comment Comment) error {
 		return errors.New("agentteam: comment ID required")
 	}
 
+	skipMentionTargets := map[string]struct{}{}
 	if comment.AuthorType == ActorBot && strings.TrimSpace(comment.AuthorBotID) != "" {
-		if err := d.finalizeAndReturn(ctx, comment); err != nil {
+		completed, err := d.finalizeAndReturn(ctx, comment)
+		if err != nil {
 			d.logger.Warn("finalize handoff failed", slog.String("issue_id", comment.IssueID), slog.Any("error", err))
+		}
+		for _, ho := range completed {
+			if ho.FromActorType == ActorBot && strings.TrimSpace(ho.FromBotID) != "" {
+				skipMentionTargets[ho.FromBotID] = struct{}{}
+			}
+		}
+		if parentID := strings.TrimSpace(comment.ParentCommentID); parentID != "" {
+			if parent, err := d.service.Store().GetComment(ctx, parentID); err == nil && parent.AuthorType == ActorBot && strings.TrimSpace(parent.AuthorBotID) != "" {
+				skipMentionTargets[parent.AuthorBotID] = struct{}{}
+			}
 		}
 	}
 
@@ -102,6 +114,9 @@ func (d *Dispatcher) HandleComment(ctx context.Context, comment Comment) error {
 			continue
 		}
 		if comment.AuthorType == ActorBot && comment.AuthorBotID == targetBotID {
+			continue
+		}
+		if _, ok := skipMentionTargets[targetBotID]; ok {
 			continue
 		}
 		if _, err := d.createHandoffForMention(ctx, comment, targetBotID); err != nil {
@@ -215,24 +230,26 @@ func (d *Dispatcher) runHandoff(ctx context.Context, handoff Handoff, comment Co
 // delegator's wake-up back to the exact session that asked the
 // question. When the original delegator was a human / system, no
 // return is queued.
-func (d *Dispatcher) finalizeAndReturn(ctx context.Context, comment Comment) error {
+func (d *Dispatcher) finalizeAndReturn(ctx context.Context, comment Comment) ([]Handoff, error) {
 	active, err := d.service.Store().ListPendingHandoffsToBotForIssue(ctx, comment.AuthorBotID, comment.IssueID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	toClose := matchHandoffsForReply(active, comment)
+	completedHandoffs := make([]Handoff, 0, len(toClose))
 	for _, ho := range toClose {
 		completed, err := d.service.Store().CompleteHandoff(ctx, ho.ID, comment.ID)
 		if err != nil {
 			d.logger.Warn("complete handoff failed", slog.String("handoff_id", ho.ID), slog.Any("error", err))
 			continue
 		}
+		completedHandoffs = append(completedHandoffs, completed)
 		if completed.FromActorType == ActorBot && strings.TrimSpace(completed.FromBotID) != "" {
 			d.queueReturn(ctx, completed, comment)
 		}
 	}
-	return nil
+	return completedHandoffs, nil
 }
 
 // matchHandoffsForReply implements the per-mention closure policy. See

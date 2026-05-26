@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ const (
 	WorkspaceLabelKey           = "memoh.workspace"
 	WorkspaceLabelValue         = "v3"
 	WorkspaceCDIDevicesLabelKey = "memoh.workspace.cdi_devices"
+	WorkspaceTeamMountsLabelKey = "memoh.workspace.team_mounts"
 	ContainerPrefix             = "workspace-"
 	LegacyContainerPrefix       = "mcp-"
 	DisplayRFBSocketName        = "display.rfb.sock"
@@ -304,6 +306,38 @@ func workspaceCDIDevicesFromLabels(labels map[string]string) []string {
 	return normalizeWorkspaceGPUDevices(strings.Split(value, ","))
 }
 
+func teamMountsLabelFromMounts(mounts []ctr.MountSpec) string {
+	slugs := make([]string, 0)
+	for _, m := range mounts {
+		dest := strings.TrimRight(strings.TrimSpace(m.Destination), "/")
+		if !strings.HasPrefix(dest, "/team/") {
+			continue
+		}
+		slug := strings.TrimPrefix(dest, "/team/")
+		if slug == "" || strings.Contains(slug, "/") {
+			continue
+		}
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	return strings.Join(slugs, ",")
+}
+
+func (m *Manager) desiredTeamMountsLabel(ctx context.Context, botID string) string {
+	return teamMountsLabelFromMounts(m.teamBindMounts(ctx, botID))
+}
+
+func (*Manager) containerTeamMountsStale(info ctr.ContainerInfo, desired string) bool {
+	if strings.HasPrefix(strings.TrimSpace(info.ID), LocalContainerPrefix) {
+		return false
+	}
+	if info.Labels == nil {
+		return true
+	}
+	current, ok := info.Labels[WorkspaceTeamMountsLabelKey]
+	return !ok || strings.TrimSpace(current) != strings.TrimSpace(desired)
+}
+
 func (m *Manager) buildWorkspaceContainerSpec(ctx context.Context, botID string, gpu WorkspaceGPUConfig) (ctr.ContainerSpec, error) {
 	resolvPath, err := ctr.ResolveConfSource(m.dataRoot())
 	if err != nil {
@@ -403,8 +437,9 @@ func (m *Manager) ensureBotWithImage(ctx context.Context, botID, image string, g
 	}
 
 	labels := map[string]string{
-		BotLabelKey:       botID,
-		WorkspaceLabelKey: WorkspaceLabelValue,
+		BotLabelKey:                 botID,
+		WorkspaceLabelKey:           WorkspaceLabelValue,
+		WorkspaceTeamMountsLabelKey: teamMountsLabelFromMounts(spec.Mounts),
 	}
 	if value := workspaceCDIDevicesLabelValue(gpu.Devices); value != "" {
 		labels[WorkspaceCDIDevicesLabelKey] = value
@@ -505,6 +540,34 @@ func (m *Manager) StartWithWorkspaceConfig(ctx context.Context, botID, image str
 	}
 }
 
+func (m *Manager) RefreshTeamMounts(ctx context.Context, botID string) error {
+	if err := validateBotID(botID); err != nil {
+		return err
+	}
+	containerID, err := m.ContainerID(ctx, botID)
+	if err != nil {
+		if errors.Is(err, ErrContainerNotFound) {
+			return nil
+		}
+		return err
+	}
+	info, err := m.service.GetContainer(ctx, containerID)
+	if err != nil {
+		if ctr.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	if !m.containerTeamMountsStale(info, m.desiredTeamMountsLabel(ctx, botID)) {
+		return nil
+	}
+	m.logger.Info("refreshing workspace team mounts", slog.String("bot_id", botID), slog.String("container_id", containerID))
+	if err := m.CleanupBotContainer(ctx, botID, true); err != nil {
+		return err
+	}
+	return m.SetupBotContainer(ctx, botID)
+}
+
 func (m *Manager) startWithLocalConfig(ctx context.Context, botID, image, workspacePath string) error {
 	if err := validateBotID(botID); err != nil {
 		return err
@@ -550,6 +613,15 @@ func (m *Manager) startWithResolvedConfig(ctx context.Context, botID, image stri
 	// and manual container deletion.
 	if _, err := m.service.GetContainer(ctx, containerID); ctr.IsNotFound(err) {
 		m.recoverOrphanedSnapshot(ctx, botID)
+	}
+
+	if info, err := m.service.GetContainer(ctx, containerID); err == nil && m.containerTeamMountsStale(info, m.desiredTeamMountsLabel(ctx, botID)) {
+		m.logger.Warn("workspace team mounts are stale, recreating container",
+			slog.String("bot_id", botID),
+			slog.String("container_id", containerID))
+		if err := m.Delete(ctx, botID, true); err != nil {
+			return fmt.Errorf("refresh team mounts: %w", err)
+		}
 	}
 
 	if err := m.ensureBotWithImage(ctx, botID, image, gpu); err != nil {

@@ -14,10 +14,11 @@ const DefaultLockTTL = 0
 
 // Service exposes domain operations over the persistence store.
 type Service struct {
-	store      Store
-	dispatcher *Dispatcher
-	logger     *slog.Logger
-	teamFSRoot string
+	store           Store
+	dispatcher      *Dispatcher
+	logger          *slog.Logger
+	teamFSRoot      string
+	refreshBotMount func(context.Context, string) error
 }
 
 // NewService builds a new agentteam.Service.
@@ -115,6 +116,49 @@ func (s *Service) Store() Store {
 		return nil
 	}
 	return s.store
+}
+
+// SetBotWorkspaceRefreshFunc wires the workspace layer hook used after team
+// membership or team slug changes. The hook is best-effort and runs
+// asynchronously so team metadata writes are not coupled to container restarts.
+func (s *Service) SetBotWorkspaceRefreshFunc(fn func(context.Context, string) error) {
+	if s == nil {
+		return
+	}
+	s.refreshBotMount = fn
+}
+
+func (s *Service) refreshBotWorkspaces(ctx context.Context, botIDs ...string) {
+	if s == nil || s.refreshBotMount == nil {
+		return
+	}
+	refreshCtx := context.WithoutCancel(ctx)
+	seen := make(map[string]struct{}, len(botIDs))
+	for _, botID := range botIDs {
+		botID = strings.TrimSpace(botID)
+		if botID == "" {
+			continue
+		}
+		if _, ok := seen[botID]; ok {
+			continue
+		}
+		seen[botID] = struct{}{}
+		go func(id string) {
+			if err := s.refreshBotMount(refreshCtx, id); err != nil && s.logger != nil {
+				s.logger.Warn("refresh bot team workspace mounts failed", slog.String("bot_id", id), slog.Any("error", err))
+			}
+		}(botID)
+	}
+}
+
+func botIDsFromMembers(members []Member) []string {
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		if m.MemberType == MemberBot && strings.TrimSpace(m.BotID) != "" {
+			out = append(out, m.BotID)
+		}
+	}
+	return out
 }
 
 // ── Teams ───────────────────────────────────────────────────────────────────
@@ -233,7 +277,15 @@ func (s *Service) UpdateTeam(ctx context.Context, id string, input UpdateTeamInp
 			return Team{}, err
 		}
 	}
-	return s.store.UpdateTeam(ctx, id, input)
+	team, err := s.store.UpdateTeam(ctx, id, input)
+	if err != nil {
+		return Team{}, err
+	}
+	s.provisionTeamFS(team)
+	if members, mErr := s.store.ListMembers(ctx, id); mErr == nil {
+		s.refreshBotWorkspaces(ctx, botIDsFromMembers(members)...)
+	}
+	return team, nil
 }
 
 // ArchiveTeam marks the team as archived (soft delete).
@@ -241,7 +293,16 @@ func (s *Service) ArchiveTeam(ctx context.Context, id string) (Team, error) {
 	if s.store == nil {
 		return Team{}, errors.New("agentteam: store not configured")
 	}
-	return s.store.ArchiveTeam(ctx, id)
+	var botIDs []string
+	if members, err := s.store.ListMembers(ctx, id); err == nil {
+		botIDs = botIDsFromMembers(members)
+	}
+	team, err := s.store.ArchiveTeam(ctx, id)
+	if err != nil {
+		return Team{}, err
+	}
+	s.refreshBotWorkspaces(ctx, botIDs...)
+	return team, nil
 }
 
 // DeleteTeam hard-deletes the team and all its rows.
@@ -249,7 +310,15 @@ func (s *Service) DeleteTeam(ctx context.Context, id string) error {
 	if s.store == nil {
 		return errors.New("agentteam: store not configured")
 	}
-	return s.store.DeleteTeam(ctx, id)
+	var botIDs []string
+	if members, err := s.store.ListMembers(ctx, id); err == nil {
+		botIDs = botIDsFromMembers(members)
+	}
+	if err := s.store.DeleteTeam(ctx, id); err != nil {
+		return err
+	}
+	s.refreshBotWorkspaces(ctx, botIDs...)
+	return nil
 }
 
 // ── Members ─────────────────────────────────────────────────────────────────
@@ -276,7 +345,14 @@ func (s *Service) AddMember(ctx context.Context, input CreateMemberInput) (Membe
 	default:
 		return Member{}, fmt.Errorf("%w: invalid member_type %q", ErrInvalidInput, input.MemberType)
 	}
-	return s.store.AddMember(ctx, input)
+	member, err := s.store.AddMember(ctx, input)
+	if err != nil {
+		return Member{}, err
+	}
+	if member.MemberType == MemberBot {
+		s.refreshBotWorkspaces(ctx, member.BotID)
+	}
+	return member, nil
 }
 
 // ListMembers returns all members of a team.
@@ -300,7 +376,14 @@ func (s *Service) RemoveMember(ctx context.Context, id string) error {
 	if s.store == nil {
 		return errors.New("agentteam: store not configured")
 	}
-	return s.store.DeleteMember(ctx, id)
+	member, _ := s.store.GetMember(ctx, id)
+	if err := s.store.DeleteMember(ctx, id); err != nil {
+		return err
+	}
+	if member.MemberType == MemberBot {
+		s.refreshBotWorkspaces(ctx, member.BotID)
+	}
+	return nil
 }
 
 // IsBotInTeam returns true when botID belongs to teamID.

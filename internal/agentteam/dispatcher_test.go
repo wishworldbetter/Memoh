@@ -18,16 +18,26 @@ type memStore struct {
 	mu       sync.Mutex
 	idSeed   atomic.Int64
 	handoffs map[string]Handoff
+	comments map[string]Comment
 	roster   []Member
 }
 
 func newMemStore() *memStore {
-	return &memStore{handoffs: make(map[string]Handoff)}
+	return &memStore{
+		handoffs: make(map[string]Handoff),
+		comments: make(map[string]Comment),
+	}
 }
 
 func (s *memStore) setRoster(members []Member) {
 	s.mu.Lock()
 	s.roster = members
+	s.mu.Unlock()
+}
+
+func (s *memStore) setComment(comment Comment) {
+	s.mu.Lock()
+	s.comments[comment.ID] = comment
 	s.mu.Unlock()
 }
 
@@ -186,7 +196,15 @@ func (*memStore) CreateComment(context.Context, CreateCommentInput) (Comment, er
 	return Comment{}, ErrNotFound
 }
 
-func (*memStore) GetComment(context.Context, string) (Comment, error)     { return Comment{}, ErrNotFound }
+func (s *memStore) GetComment(_ context.Context, id string) (Comment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	comment, ok := s.comments[id]
+	if !ok {
+		return Comment{}, ErrNotFound
+	}
+	return comment, nil
+}
 func (*memStore) ListComments(context.Context, string) ([]Comment, error) { return nil, nil }
 func (*memStore) TouchIssueAfterComment(context.Context, string) error    { return nil }
 func (*memStore) DeleteComment(context.Context, string) error             { return nil }
@@ -448,6 +466,96 @@ func TestDispatcherReturnOnBotComment(t *testing.T) {
 	originalForBot2, _ := store.ListPendingHandoffsToBotForIssue(context.Background(), "bot-2", "issue-1")
 	if len(originalForBot2) != 0 {
 		t.Fatalf("expected bot-2 pending handoff to be completed, got %d still pending", len(originalForBot2))
+	}
+}
+
+func TestDispatcherBotReplyMentioningDelegatorDoesNotCreateExtraHandoff(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	seedTeamRoster(store)
+	svc := newServiceWithStore(t, store)
+	d := svc.Dispatcher()
+
+	originalCmt := Comment{
+		ID:              "cmt-1",
+		IssueID:         "issue-1",
+		TeamID:          "team-1",
+		AuthorType:      ActorBot,
+		AuthorBotID:     "bot-1",
+		Content:         "@Worker please confirm",
+		SourceSessionID: "sess-leader-1",
+	}
+	if err := d.HandleComment(context.Background(), originalCmt); err != nil {
+		t.Fatalf("HandleComment 1: %v", err)
+	}
+
+	resultCmt := Comment{
+		ID:              "cmt-2",
+		IssueID:         "issue-1",
+		TeamID:          "team-1",
+		AuthorType:      ActorBot,
+		AuthorBotID:     "bot-2",
+		Content:         "@Leader confirmed",
+		ParentCommentID: "cmt-1",
+		SourceSessionID: "sess-worker-1",
+	}
+	if err := d.HandleComment(context.Background(), resultCmt); err != nil {
+		t.Fatalf("HandleComment 2: %v", err)
+	}
+
+	pendingForLeader, _ := store.ListPendingHandoffsToBotForIssue(context.Background(), "bot-1", "issue-1")
+	if len(pendingForLeader) != 1 {
+		t.Fatalf("expected only the system return handoff, got %d pending handoffs", len(pendingForLeader))
+	}
+	if pendingForLeader[0].FromActorType != ActorSystem {
+		t.Fatalf("pending handoff from_actor = %s, want system", pendingForLeader[0].FromActorType)
+	}
+}
+
+func TestDispatcherReturnReplyMentioningParentAuthorDoesNotCreateExtraHandoff(t *testing.T) {
+	t.Parallel()
+	store := newMemStore()
+	seedTeamRoster(store)
+	store.setComment(Comment{
+		ID:          "cmt-worker-result",
+		IssueID:     "issue-1",
+		TeamID:      "team-1",
+		AuthorType:  ActorBot,
+		AuthorBotID: "bot-2",
+		Content:     "@Leader confirmed",
+	})
+	svc := newServiceWithStore(t, store)
+	d := svc.Dispatcher()
+
+	if _, err := store.CreateHandoff(context.Background(), CreateHandoffInput{
+		TeamID:           "team-1",
+		IssueID:          "issue-1",
+		FromActorType:    ActorSystem,
+		ToBotID:          "bot-1",
+		TriggerCommentID: "cmt-worker-result",
+		TargetSessionID:  "sess-leader-1",
+		Status:           HandoffDispatched,
+	}); err != nil {
+		t.Fatalf("CreateHandoff: %v", err)
+	}
+
+	reply := Comment{
+		ID:              "cmt-leader-reply",
+		IssueID:         "issue-1",
+		TeamID:          "team-1",
+		AuthorType:      ActorBot,
+		AuthorBotID:     "bot-1",
+		Content:         "@Worker thanks, done",
+		ParentCommentID: "cmt-worker-result",
+		SourceSessionID: "sess-leader-1",
+	}
+	if err := d.HandleComment(context.Background(), reply); err != nil {
+		t.Fatalf("HandleComment: %v", err)
+	}
+
+	pendingForWorker, _ := store.ListPendingHandoffsToBotForIssue(context.Background(), "bot-2", "issue-1")
+	if len(pendingForWorker) != 0 {
+		t.Fatalf("expected no new handoff back to parent author, got %d", len(pendingForWorker))
 	}
 }
 

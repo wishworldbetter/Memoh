@@ -983,6 +983,13 @@ func wireWorkspaceTeamMounts(manager *workspace.Manager, localSvc *workspace.Loc
 	}
 	manager.SetTeamMountsResolver(resolver)
 	localSvc.SetTeamMountsResolver(resolver)
+	teamService.SetBotWorkspaceRefreshFunc(func(ctx context.Context, botID string) error {
+		localSvc.RefreshTeamMounts(botID)
+		if info, err := manager.WorkspaceInfo(ctx, botID); err == nil && info.Backend == bridge.WorkspaceBackendLocal {
+			return nil
+		}
+		return manager.RefreshTeamMounts(ctx, botID)
+	})
 }
 
 func wireResolverOutbound(resolver *flow.Resolver, channelManager *channel.Manager) {

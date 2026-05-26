@@ -367,6 +367,13 @@ func (s *LocalService) WorkspaceInfo(_ context.Context, botID string) (bridge.Wo
 	}, nil
 }
 
+func (s *LocalService) RefreshTeamMounts(botID string) {
+	if s == nil {
+		return
+	}
+	s.closeClient(strings.TrimSpace(botID))
+}
+
 func (s *LocalService) DefaultWorkspacePath(botID, displayName string) string {
 	name := strings.TrimSpace(displayName)
 	if name == "" {

@@ -440,7 +440,7 @@ func (m *Manager) ReconcileContainers(ctx context.Context) {
 		containerID := row.ContainerID
 		botID := uuid.UUID(row.BotID.Bytes).String()
 
-		_, err := m.service.GetContainer(ctx, containerID)
+		info, err := m.service.GetContainer(ctx, containerID)
 		if err != nil {
 			if !ctr.IsNotFound(err) {
 				m.logger.Error("reconcile: failed to get container",
@@ -452,6 +452,23 @@ func (m *Manager) ReconcileContainers(ctx context.Context) {
 				slog.String("bot_id", botID), slog.String("container_id", containerID))
 			if setupErr := m.SetupBotContainer(ctx, botID); setupErr != nil {
 				m.logger.Error("reconcile: rebuild failed",
+					slog.String("bot_id", botID), slog.Any("error", setupErr))
+				m.markContainerStatus(ctx, botID, "error")
+			}
+			continue
+		}
+
+		if m.containerTeamMountsStale(info, m.desiredTeamMountsLabel(ctx, botID)) {
+			m.logger.Warn("reconcile: team mounts stale, rebuilding",
+				slog.String("bot_id", botID), slog.String("container_id", containerID))
+			if err := m.CleanupBotContainer(ctx, botID, true); err != nil {
+				m.logger.Error("reconcile: cleanup before team mount rebuild failed",
+					slog.String("bot_id", botID), slog.Any("error", err))
+				m.markContainerStatus(ctx, botID, "error")
+				continue
+			}
+			if setupErr := m.SetupBotContainer(ctx, botID); setupErr != nil {
+				m.logger.Error("reconcile: team mount rebuild failed",
 					slog.String("bot_id", botID), slog.Any("error", setupErr))
 				m.markContainerStatus(ctx, botID, "error")
 			}

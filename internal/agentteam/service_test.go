@@ -8,11 +8,42 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 type stubResolveStore struct {
 	memStore
 	issues map[string]Issue
+}
+
+type callbackStore struct {
+	memStore
+	member Member
+}
+
+func (s *callbackStore) AddMember(_ context.Context, input CreateMemberInput) (Member, error) {
+	s.member = Member{
+		ID:         "member-1",
+		TeamID:     input.TeamID,
+		MemberType: input.MemberType,
+		BotID:      input.BotID,
+		UserID:     input.UserID,
+	}
+	return s.member, nil
+}
+
+func (s *callbackStore) GetMember(_ context.Context, id string) (Member, error) {
+	if s.member.ID == id {
+		return s.member, nil
+	}
+	return Member{}, ErrNotFound
+}
+
+func (s *callbackStore) DeleteMember(_ context.Context, id string) error {
+	if s.member.ID != id {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (s *stubResolveStore) GetIssue(_ context.Context, id string) (Issue, error) {
@@ -112,6 +143,45 @@ func TestValidateSharedDirName(t *testing.T) {
 				t.Fatalf("expected no error for %q, got %v", tc.input, err)
 			}
 		})
+	}
+}
+
+func TestMemberChangesRefreshBotWorkspace(t *testing.T) {
+	store := &callbackStore{}
+	svc := NewService(slog.Default(), store)
+	got := make(chan string, 2)
+	svc.SetBotWorkspaceRefreshFunc(func(_ context.Context, botID string) error {
+		got <- botID
+		return nil
+	})
+
+	member, err := svc.AddMember(context.Background(), CreateMemberInput{
+		TeamID:     "team-1",
+		MemberType: MemberBot,
+		BotID:      "bot-1",
+	})
+	if err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	select {
+	case botID := <-got:
+		if botID != "bot-1" {
+			t.Fatalf("refresh after add = %q, want bot-1", botID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for add refresh")
+	}
+
+	if err := svc.RemoveMember(context.Background(), member.ID); err != nil {
+		t.Fatalf("RemoveMember: %v", err)
+	}
+	select {
+	case botID := <-got:
+		if botID != "bot-1" {
+			t.Fatalf("refresh after remove = %q, want bot-1", botID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for remove refresh")
 	}
 }
 
