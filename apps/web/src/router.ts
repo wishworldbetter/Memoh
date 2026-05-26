@@ -37,6 +37,14 @@ const routes = [
         },
       },
       {
+        name: 'team-issue-new',
+        path: '/teams/:teamId/issues/new',
+        component: () => import('@/pages/team-workspace/new.vue'),
+        meta: {
+          breadcrumb: i18nRef('teams.newIssue'),
+        },
+      },
+      {
         name: 'team-issue',
         path: '/teams/:teamId/issues/:issueId',
         component: () => import('@/pages/team-workspace/issue.vue'),

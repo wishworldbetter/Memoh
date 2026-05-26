@@ -1,208 +1,31 @@
 <template>
   <section class="absolute inset-0 flex flex-col bg-background">
     <div class="flex-1 relative">
-      <MasterDetailSidebarLayout
-        class="[&_td:last-child]:w-45"
+      <BotDetailSidebar
+        v-model:active-tab="activeTab"
+        v-model:bot-name-draft="botNameDraft"
+        v-model:search-query="searchQuery"
+        :avatar-fallback="avatarFallback"
+        :bot="bot"
+        :bot-id="botId"
+        :bot-lifecycle-pending="botLifecyclePending"
+        :bot-type-label="botTypeLabel"
+        :grouped-tabs="groupedTabs"
+        :has-issue="hasIssue"
+        :is-editing-bot-name="isEditingBotName"
+        :is-saving-bot-name="isSavingBotName"
+        :issue-title="issueTitle"
+        :search-results="searchResults"
+        :status-label="statusLabel"
+        :status-variant="statusVariant"
+        :tab-list="tabList"
+        @cancel-bot-name="handleCancelBotName"
+        @confirm-bot-name="handleConfirmBotName"
+        @edit-avatar="handleEditAvatar"
+        @start-edit-bot-name="handleStartEditBotName"
       >
-        <template #sidebar-header>
-          <!-- Bot Identity Header -->
-          <div class="p-4 pb-3 flex flex-col">
-            <div class="flex items-center gap-3">
-              <!-- Avatar -->
-              <div class="group/avatar relative size-12 shrink-0 rounded-full overflow-hidden bg-muted">
-                <Avatar class="size-12 rounded-full">
-                  <AvatarImage
-                    v-if="bot?.avatar_url"
-                    :src="bot.avatar_url"
-                    :alt="bot.display_name"
-                  />
-                  <AvatarFallback class="text-lg">
-                    {{ avatarFallback }}
-                  </AvatarFallback>
-                </Avatar>
-                <!-- Edit Overlay -->
-                <button
-                  type="button"
-                  class="absolute inset-0 flex items-center justify-center rounded-full bg-black/40 opacity-0 transition-opacity group-hover/avatar:opacity-100"
-                  :title="$t('common.edit')"
-                  :aria-label="$t('common.edit')"
-                  :disabled="!bot || botLifecyclePending"
-                  @click="handleEditAvatar"
-                >
-                  <SquarePen class="size-4 text-white" />
-                </button>
-              </div>
-              
-              <!-- Info Block -->
-              <div class="min-w-0 flex-1 flex flex-col justify-center">
-                <div class="group/name flex items-center gap-1 relative min-w-0">
-                  <template v-if="isEditingBotName && bot">
-                    <Input
-                      ref="editNameInputRef"
-                      v-model="botNameDraft"
-                      class="h-7 w-full text-xs px-2 pr-6 shadow-none"
-                      :placeholder="$t('bots.displayNamePlaceholder')"
-                      :disabled="isSavingBotName"
-                      @keydown.enter.prevent="handleConfirmBotName"
-                      @keydown.esc.prevent="handleCancelBotName"
-                      @blur="handleConfirmBotName"
-                    />
-                    <div class="absolute right-1.5 top-1/2 -translate-y-1/2 opacity-50 pointer-events-none">
-                      <Check class="size-3" />
-                    </div>
-                  </template>
-                  <template v-else>
-                    <h2 class="truncate text-sm font-semibold text-foreground">
-                      {{ botNameDraft.trim() || bot?.display_name || botId }}
-                    </h2>
-                    <button
-                      v-if="bot"
-                      type="button"
-                      class="opacity-0 group-hover/name:opacity-100 p-1 shrink-0"
-                      :disabled="botLifecyclePending"
-                      @click="handleStartEditBotName"
-                    >
-                      <SquarePen class="size-3 text-muted-foreground" />
-                    </button>
-                  </template>
-                </div>
-                
-                <!-- Status Badge (Flat Industrial Style) -->
-                <div class="mt-0.5">
-                  <div
-                    v-if="bot"
-                    class="inline-flex items-center h-5 bg-[#27272a] rounded-full px-2 gap-1.5"
-                    :title="hasIssue ? issueTitle : undefined"
-                  >
-                    <LoaderCircle
-                      v-if="bot.status === 'creating' || bot.status === 'deleting'"
-                      class="size-2.5 animate-spin text-[#d0d0d4]"
-                    />
-                    <div
-                      v-else
-                      class="size-1.5 rounded-full"
-                      :class="statusVariant === 'destructive' ? 'bg-destructive' : 'bg-success'"
-                    />
-                    <span class="text-[10px] font-medium text-[#d0d0d4]">{{ statusLabel }}</span>
-                  </div>
-                  <span
-                    v-if="bot?.type"
-                    class="text-[10px] text-muted-foreground ml-1.5"
-                  >{{ botTypeLabel }}</span>
-                </div>
-              </div>
-            </div>
-            
-            <!-- Search Input -->
-            <div class="mt-4 relative">
-              <Search class="absolute left-2.5 top-1/2 -translate-y-1/2 size-3 text-muted-foreground" />
-              <Input
-                v-model="searchQuery"
-                type="text"
-                class="pl-8 h-8 text-xs bg-transparent shadow-none focus-visible:ring-0"
-                :placeholder="$t('common.search')"
-              />
-              <button
-                v-if="searchQuery"
-                type="button"
-                class="absolute right-2 top-1/2 -translate-y-1/2 size-4 flex items-center justify-center rounded-full hover:bg-muted text-muted-foreground shrink-0"
-                @click="searchQuery = ''"
-              >
-                <X class="size-2.5" />
-              </button>
-            </div>
-          </div>
-        </template>
-
-        <template #sidebar-content>
-          <!-- Search Results View -->
-          <div
-            v-if="searchQuery"
-            class="flex flex-col gap-1"
-          >
-            <div
-              v-if="searchResults.length === 0"
-              class="px-3 py-4 text-xs text-muted-foreground text-center"
-            >
-              {{ $t('common.noData') }}
-            </div>
-            <SidebarMenu
-              v-else
-              class="m-0 p-0 gap-1"
-            >
-              <SidebarMenuItem
-                v-for="(result, idx) in searchResults"
-                :key="idx"
-              >
-                <SidebarMenuButton
-                  as-child
-                  class="justify-start py-0! px-0 h-11 before:hidden"
-                >
-                  <button
-                    class="w-full flex flex-col items-start justify-center py-2 px-3 text-left border border-transparent transition-colors hover:bg-accent hover:text-accent-foreground rounded-md group/result"
-                    @click="() => { activeTab = result.tab; searchQuery = '' }"
-                  >
-                    <span class="text-xs font-medium text-foreground group-hover/result:text-accent-foreground">{{ result.translatedTitle }}</span>
-                    <span class="text-[10px] text-muted-foreground mt-1 flex items-center gap-1 group-hover/result:text-accent-foreground/70">
-                      <component
-                        :is="tabList.find(t => t.value === result.tab)?.icon"
-                        class="size-3 opacity-70"
-                      />
-                      {{ $t(`bots.tabs.${result.tab}`) }}
-                    </span>
-                  </button>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </div>
-
-          <!-- Normal Grouped View -->
-          <template v-else>
-            <div
-              v-for="(group, idx) in groupedTabs"
-              :key="group.key"
-              :class="idx > 0 ? 'mt-4' : ''"
-              class="flex flex-col gap-0.5"
-            >
-              <SidebarMenu
-                v-for="tab in group.items"
-                :key="tab.value"
-                class="m-0 p-0"
-              >
-                <SidebarMenuItem>
-                  <SidebarMenuButton
-                    as-child
-                    :is-active="activeTab === tab.value"
-                    class="justify-start py-0! px-0 h-10 before:hidden"
-                  >
-                    <Toggle
-                      class="w-full justify-start h-10 px-3 text-xs font-medium border-0 bg-transparent! transition-colors gap-3"
-                      :model-value="isActive(tab.value).value"
-                      @update:model-value="(isSelect: boolean) => {
-                        if (isSelect) {
-                          activeTab = tab.value
-                        }
-                      }"
-                    >
-                      <component
-                        :is="tab.icon"
-                        v-if="tab.icon"
-                        class="size-4 shrink-0"
-                      />
-                      <span class="whitespace-nowrap">{{ $t(tab.label) }}</span>
-                    </Toggle>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              </SidebarMenu>
-            </div>
-          </template>
-        </template>
-
-        <template #sidebar-footer />
-
         <template #detail>
           <div class="absolute inset-0 overflow-y-auto bg-background">
-            <!-- Ensure consistent padding matching Box-in-Box bento architecture -->
             <div class="px-6 pt-4 pb-4">
               <KeepAlive>
                 <component
@@ -213,7 +36,7 @@
             </div>
           </div>
         </template>
-      </MasterDetailSidebarLayout>
+      </BotDetailSidebar>
     </div>
 
     <AvatarEditDialog
@@ -226,15 +49,11 @@
 
 <script setup lang="ts">
 import {
-  Avatar, AvatarImage, AvatarFallback, Input,
-  SidebarMenu, SidebarMenuButton, SidebarMenuItem, Toggle
-} from '@memohai/ui'
-import {
-  SquarePen, LoaderCircle, Check, Search, X, LayoutDashboard, Settings, MessageSquare,
+  LayoutDashboard, Settings, MessageSquare,
   BrainCircuit, ShieldAlert, HeartPulse, Database, Mail, Link, Clock, Server, FileBox, Zap,
   Monitor, Globe
 } from 'lucide-vue-next'
-import { computed, ref, watch, onMounted, toValue, nextTick } from 'vue'
+import { computed, ref, watch, onMounted, toValue } from 'vue'
 import { useRoute } from 'vue-router'
 import { toast } from 'vue-sonner'
 import { useI18n } from 'vue-i18n'
@@ -268,11 +87,11 @@ import BotSchedule from './components/bot-schedule.vue'
 import BotContainer from './components/bot-container.vue'
 import BotAccess from './components/bot-access.vue'
 import AvatarEditDialog from './components/avatar-edit-dialog.vue'
+import BotDetailSidebar from './components/bot-detail-sidebar.vue'
 import { resolveApiErrorMessage } from '@/utils/api-error'
 import { useAvatarInitials } from '@/composables/useAvatarInitials'
 import { useSyncedQueryParam } from '@/composables/useSyncedQueryParam'
 import { useBotStatusMeta } from '@/composables/useBotStatusMeta'
-import MasterDetailSidebarLayout from '@/components/master-detail-sidebar-layout/index.vue'
 import { isLocalWorkspaceBot } from '@/utils/bot-workspace'
 type BotCheck = BotsBotCheck
 type BotContainerInfo = HandlersGetContainerResponse
@@ -378,10 +197,6 @@ const groupedTabs = computed(() => {
   ].filter(g => g.items.length > 0)
 })
 
-const isActive = (name: string) => computed(() => {
-  return activeTab.value === name
-})
-
 const activeComponent = computed(() => {
   return tabList.value.find(tab => tab.value === activeTab.value)
 })
@@ -410,7 +225,6 @@ async function fetchChecks(id: string): Promise<BotCheck[]> {
 
 const isEditingBotName = ref(false)
 const botNameDraft = ref('')
-const editNameInputRef = ref<InstanceType<typeof Input> | null>(null)
 
 // Replace breadcrumb bot id with display name when available.
 watch(bot, (val) => {
@@ -512,13 +326,6 @@ function handleStartEditBotName() {
   if (!bot.value) return
   isEditingBotName.value = true
   botNameDraft.value = bot.value.display_name || ''
-  nextTick(() => {
-    const el = editNameInputRef.value?.$el
-    if (el) {
-      const input = el instanceof HTMLInputElement ? el : el.querySelector('input')
-      if (input) input.focus()
-    }
-  })
 }
 
 function handleCancelBotName() {
