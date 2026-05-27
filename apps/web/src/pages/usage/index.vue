@@ -19,7 +19,7 @@
     <div class="flex flex-wrap items-end gap-4">
       <div class="space-y-1.5">
         <Label>{{ $t('usage.selectBot') }}</Label>
-        <BotSelect
+        <PrincipalSelect
           v-model="selectedBotId"
           trigger-class="w-56"
           :placeholder="$t('usage.selectBotPlaceholder')"
@@ -423,7 +423,7 @@ import {
 } from '@memohai/ui'
 import { getBotsQuery } from '@memohai/sdk/colada'
 import { getBotsByBotIdTokenUsage, getBotsByBotIdTokenUsageRecords } from '@memohai/sdk'
-import BotSelect from '@/components/bot-select/index.vue'
+import PrincipalSelect from '@/components/principal-select/index.vue'
 import type { HandlersDailyTokenUsage, HandlersModelTokenUsage, HandlersTokenUsageRecord } from '@memohai/sdk'
 import { useSyncedQueryParam } from '@/composables/useSyncedQueryParam'
 import { formatDateTimeSeconds } from '@/utils/date-time'

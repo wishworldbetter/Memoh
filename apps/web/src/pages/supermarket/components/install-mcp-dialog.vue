@@ -10,7 +10,7 @@
       <div class="space-y-4 py-2">
         <div class="space-y-1.5">
           <label class="text-xs font-medium">{{ $t('supermarket.selectBot') }}</label>
-          <BotSelect
+          <PrincipalSelect
             v-model="selectedBotId"
             trigger-class="w-full"
           />
@@ -62,7 +62,7 @@ import {
   Button, Badge,
 } from '@memohai/ui'
 import type { HandlersSupermarketMcpEntry } from '@memohai/sdk'
-import BotSelect from '@/components/bot-select/index.vue'
+import PrincipalSelect from '@/components/principal-select/index.vue'
 import { useSupermarketMcpDraft } from '@/stores/supermarket-mcp-draft'
 
 const props = defineProps<{

@@ -92,6 +92,17 @@
     "invalidCredentials": "Invalid username or password",
     "retryHint": "Please check your credentials and try again"
   },
+  "principalSelect": {
+    "selectBotPlaceholder": "Select a bot",
+    "selectUserPlaceholder": "Select a user",
+    "selectPrincipalPlaceholder": "Select a bot or user",
+    "searchPlaceholder": "Search…",
+    "empty": "No matches.",
+    "botsGroup": "Bots",
+    "usersGroup": "Users",
+    "kindBot": "Bot",
+    "kindUser": "User"
+  },
   "sidebar": {
     "session": "Sessions",
     "chat": "Chat",

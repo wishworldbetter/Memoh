@@ -10,7 +10,7 @@
       <div class="space-y-4 py-2">
         <div class="space-y-1.5">
           <label class="text-xs font-medium">{{ $t('supermarket.selectBot') }}</label>
-          <BotSelect
+          <PrincipalSelect
             v-model="selectedBotId"
             trigger-class="w-full"
           />
@@ -71,7 +71,7 @@ import {
   type HandlersSupermarketSkillEntry,
 } from '@memohai/sdk'
 import { resolveApiErrorMessage } from '@/utils/api-error'
-import BotSelect from '@/components/bot-select/index.vue'
+import PrincipalSelect from '@/components/principal-select/index.vue'
 
 const props = defineProps<{
   open: boolean

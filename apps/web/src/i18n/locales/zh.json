@@ -92,6 +92,17 @@
     "invalidCredentials": "用户名或密码不正确",
     "retryHint": "请检查凭据后重试"
   },
+  "principalSelect": {
+    "selectBotPlaceholder": "选择 Bot",
+    "selectUserPlaceholder": "选择用户",
+    "selectPrincipalPlaceholder": "选择 Bot 或用户",
+    "searchPlaceholder": "搜索…",
+    "empty": "没有匹配项。",
+    "botsGroup": "Bots",
+    "usersGroup": "用户",
+    "kindBot": "Bot",
+    "kindUser": "用户"
+  },
   "sidebar": {
     "session": "会话列表",
     "chat": "对话",
