@@ -64,7 +64,7 @@
 import { computed, toValue } from 'vue'
 import { useRoute } from 'vue-router'
 import { useQuery } from '@pinia/colada'
-import { getBotsById } from '@memohai/sdk'
+import { getBotsById, getTeamsByTeamId } from '@memohai/sdk'
 import {
   SidebarInset,
   Breadcrumb,
@@ -92,15 +92,30 @@ const { data: bot } = useQuery({
   enabled: () => route.name === 'bot-detail' && !!route.params.botId,
 })
 
+// Fetch team data so the team-detail breadcrumb resolves to the reactive name.
+const { data: team } = useQuery({
+  key: () => ['team', route.params.teamId as string],
+  query: async () => {
+    const { data, error } = await getTeamsByTeamId({
+      path: { team_id: route.params.teamId as string },
+    })
+    if (error) throw error
+    return data
+  },
+  enabled: () => route.name === 'team-detail' && !!route.params.teamId,
+})
+
 const breadcrumbs = computed(() => {
   const items = []
   const matched = route.matched
   for (const m of matched) {
     if (m.meta && m.meta.breadcrumb) {
       let label = ''
-      // Special case for bot-detail to use the reactive display name
+      // Special case for bot-detail / team-detail to use reactive display names
       if (m.name === 'bot-detail' && bot.value?.display_name) {
         label = bot.value.display_name
+      } else if (m.name === 'team-detail' && team.value?.name) {
+        label = team.value.name
       } else {
         const b = m.meta.breadcrumb
         label = typeof b === 'function' ? b(route) : toValue(b)

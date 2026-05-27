@@ -61,28 +61,7 @@
     </header>
 
     <div class="flex-1 overflow-auto px-6 py-4">
-      <Empty
-        v-if="rawIssues.length === 0 && !isLoading"
-        class="mt-20 flex flex-col items-center justify-center"
-      >
-        <EmptyHeader>
-          <EmptyMedia variant="icon">
-            <ListTodo />
-          </EmptyMedia>
-        </EmptyHeader>
-        <EmptyTitle>{{ t('teams.noIssues') }}</EmptyTitle>
-        <EmptyDescription>{{ t('teams.noIssuesHint') }}</EmptyDescription>
-        <EmptyContent>
-          <Button @click="openCreate()">
-            <Plus class="mr-1.5 size-4" /> {{ t('teams.newIssue') }}
-          </Button>
-        </EmptyContent>
-      </Empty>
-
-      <div
-        v-else
-        class="flex min-h-full min-w-max gap-4 pb-4"
-      >
+      <div class="flex min-h-full min-w-max gap-4 pb-4">
         <div
           v-if="rawIssues.length > 0 && issues.length === 0"
           class="flex w-72 shrink-0 items-center justify-center rounded-lg border border-dashed bg-muted/20 p-6 text-center text-sm text-muted-foreground"
@@ -237,7 +216,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useMutation, useQuery, useQueryCache } from '@pinia/colada'
 import { toast } from 'vue-sonner'
-import { ListTodo, Plus, Search, Settings, UserCircle } from 'lucide-vue-next'
+import { Plus, Search, Settings, UserCircle } from 'lucide-vue-next'
 import Sortable from 'sortablejs'
 import {
   Avatar,
@@ -245,12 +224,6 @@ import {
   AvatarImage,
   Badge,
   Button,
-  Empty,
-  EmptyContent,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
   Input,
   Select,
   SelectContent,
@@ -300,7 +273,7 @@ const { data: teamData } = useQuery({
   enabled: () => !!teamId.value,
 })
 
-const { data: issuesData, status: issueQueryStatus } = useQuery({
+const { data: issuesData } = useQuery({
   key: () => ['team', teamId.value, 'issues'],
   query: async () => {
     const { data, error } = await getTeamsByTeamIdIssues({ path: { team_id: teamId.value } })
@@ -330,7 +303,6 @@ const { data: botListData } = useQuery({
 })
 
 const team = computed(() => teamData.value)
-const isLoading = computed(() => issueQueryStatus.value === 'loading')
 const searchText = ref('')
 const optimisticStatuses = ref<Record<string, IssueStatus>>({})
 const updatingIssueIDs = ref<Set<string>>(new Set())

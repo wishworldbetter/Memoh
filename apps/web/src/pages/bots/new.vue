@@ -1,5 +1,5 @@
 <template>
-  <section class="relative px-4 pt-2 pb-10 lg:px-6 md:pt-4 md:pb-12 max-w-2xl">
+  <section class="relative mx-auto px-4 pt-2 pb-10 lg:px-6 md:pt-4 md:pb-12 max-w-2xl">
     <form
       :aria-busy="isCreateFlowBlocked"
       :class="{ 'pointer-events-none select-none opacity-60': isCreateFlowBlocked }"

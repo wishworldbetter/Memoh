@@ -111,6 +111,14 @@ const routes = [
             component: () => import('@/pages/teams/index.vue'),
           },
           {
+            name: 'team-new',
+            path: 'new',
+            component: () => import('@/pages/teams/new.vue'),
+            meta: {
+              breadcrumb: i18nRef('teams.create'),
+            },
+          },
+          {
             name: 'team-detail',
             path: ':teamId',
             component: () => import('@/pages/teams/detail.vue'),
