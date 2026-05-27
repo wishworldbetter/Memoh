@@ -625,6 +625,8 @@ func provideToolProviders(log *slog.Logger, channelManager *channel.Manager, reg
 		assetResolver = &mediaAssetResolverAdapter{media: mediaService}
 	}
 	fedSource := mcpfederation.NewSource(log, fedGateway, mcpConnService)
+	teamProvider := agenttools.NewTeamProvider(log, teamService)
+	teamProvider.SetSessionService(sessionService)
 	return []agenttools.ToolProvider{
 		agenttools.NewMessageProvider(log, channelManager, channelManager, registry, assetResolver),
 		agenttools.NewContactsProvider(log, routeService),
@@ -642,7 +644,7 @@ func provideToolProviders(log *slog.Logger, channelManager *channel.Manager, reg
 		agenttools.NewImageGenProvider(log, settingsService, modelsService, queries, manager, config.DefaultDataMount),
 		agenttools.NewFederationProvider(log, fedSource),
 		agenttools.NewHistoryProvider(log, sessionService, queries),
-		agenttools.NewTeamProvider(log, teamService),
+		teamProvider,
 	}
 }
 

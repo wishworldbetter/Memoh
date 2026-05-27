@@ -112,6 +112,72 @@ func TestResolveIssueRefAcceptsNumberHashAndUUID(t *testing.T) {
 	_ = json.RawMessage(nil)
 }
 
+// listExistenceStore is a memStore variant that tracks the existence of
+// a single team and reports the calls it observes so tests can assert
+// the store layer was (or was not) reached.
+type listExistenceStore struct {
+	memStore
+	knownTeamID string
+	listCalls   int
+}
+
+func (s *listExistenceStore) GetTeam(_ context.Context, id string) (Team, error) {
+	if id == s.knownTeamID {
+		return Team{ID: id, Name: "team"}, nil
+	}
+	return Team{}, ErrNotFound
+}
+
+func (s *listExistenceStore) ListMembers(_ context.Context, _ string) ([]Member, error) {
+	s.listCalls++
+	return nil, nil
+}
+
+func (s *listExistenceStore) ListIssuesByTeam(_ context.Context, _ string) ([]Issue, error) {
+	s.listCalls++
+	return nil, nil
+}
+
+func (s *listExistenceStore) ListOpenIssuesByTeam(_ context.Context, _ string) ([]Issue, error) {
+	s.listCalls++
+	return nil, nil
+}
+
+func TestListByTeamRequiresExistingTeam(t *testing.T) {
+	t.Parallel()
+
+	store := &listExistenceStore{knownTeamID: "team-known"}
+	svc := NewService(slog.Default(), store)
+
+	if _, err := svc.ListMembers(context.Background(), "team-missing"); err == nil ||
+		!strings.Contains(err.Error(), "team not found") {
+		t.Fatalf("ListMembers missing team: got %v", err)
+	}
+	if _, err := svc.ListIssuesByTeam(context.Background(), "team-missing"); err == nil ||
+		!strings.Contains(err.Error(), "team not found") {
+		t.Fatalf("ListIssuesByTeam missing team: got %v", err)
+	}
+	if _, err := svc.ListOpenIssuesByTeam(context.Background(), "team-missing"); err == nil ||
+		!strings.Contains(err.Error(), "team not found") {
+		t.Fatalf("ListOpenIssuesByTeam missing team: got %v", err)
+	}
+	if store.listCalls != 0 {
+		t.Fatalf("expected store list calls to be skipped for missing team, got %d", store.listCalls)
+	}
+
+	if _, err := svc.ListMembers(context.Background(), ""); err == nil ||
+		!errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("ListMembers empty team: expected ErrInvalidInput, got %v", err)
+	}
+
+	if _, err := svc.ListIssuesByTeam(context.Background(), "team-known"); err != nil {
+		t.Fatalf("ListIssuesByTeam known team: %v", err)
+	}
+	if store.listCalls != 1 {
+		t.Fatalf("expected store list to be called once for known team, got %d", store.listCalls)
+	}
+}
+
 func TestValidateSharedDirName(t *testing.T) {
 	cases := []struct {
 		name    string

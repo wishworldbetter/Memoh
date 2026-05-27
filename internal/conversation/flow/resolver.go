@@ -318,6 +318,50 @@ func buildHandoffSessionTitle(issue *agentteam.Issue) string {
 	return fmt.Sprintf("Issue #%d %s", issue.Number, title)
 }
 
+// hydrateTeamContextFromSession backfills cfg.Identity.TeamID / IssueID
+// from the active chat session's metadata when they were not already set
+// by an upstream caller (e.g. TriggerHandoff sets them explicitly).
+//
+// This is the read side of the team-context persistence introduced for
+// regular chat sessions: when an agent successfully creates / comments
+// on an issue, the team tools write `last_team_id` / `last_issue_id`
+// into bot_sessions.metadata so subsequent turns in the same chat session
+// can resolve numeric issue references like `#3` without the user (or
+// agent) repeating the team UUID every turn.
+//
+// The function is intentionally tolerant: missing metadata, lookup
+// errors, or sessions without an ID all leave cfg untouched.
+func (r *Resolver) hydrateTeamContextFromSession(ctx context.Context, cfg agentpkg.RunConfig) agentpkg.RunConfig {
+	if r.sessionService == nil {
+		return cfg
+	}
+	sessionID := strings.TrimSpace(cfg.Identity.SessionID)
+	if sessionID == "" {
+		return cfg
+	}
+	if strings.TrimSpace(cfg.Identity.TeamID) != "" {
+		// Already populated by the caller (e.g. TriggerHandoff). Do
+		// not let stale session metadata override an explicit value.
+		return cfg
+	}
+	sess, err := r.sessionService.Get(ctx, sessionID)
+	if err != nil {
+		return cfg
+	}
+	if sess.Metadata == nil {
+		return cfg
+	}
+	if v, _ := sess.Metadata["last_team_id"].(string); strings.TrimSpace(v) != "" {
+		cfg.Identity.TeamID = strings.TrimSpace(v)
+	}
+	if cfg.Identity.IssueID == "" {
+		if v, _ := sess.Metadata["last_issue_id"].(string); strings.TrimSpace(v) != "" {
+			cfg.Identity.IssueID = strings.TrimSpace(v)
+		}
+	}
+	return cfg
+}
+
 // resolveCommentAuthorName returns the display name of a comment's author
 // (bot or user). Falls back to a stable string when the author row cannot
 // be resolved so the prompt never leaves the bot guessing.
@@ -1133,6 +1177,7 @@ func (r *Resolver) ResolveRunConfig(ctx context.Context, botID, sessionID, chann
 
 // prepareRunConfig generates the system prompt and appends the user message.
 func (r *Resolver) prepareRunConfig(ctx context.Context, cfg agentpkg.RunConfig) agentpkg.RunConfig {
+	cfg = r.hydrateTeamContextFromSession(ctx, cfg)
 	supportsImageInput := cfg.SupportsImageInput
 	var files []agentpkg.SystemFile
 	if r.agent != nil {

@@ -29,6 +29,7 @@ const (
 type SessionService interface {
 	Get(ctx context.Context, sessionID string) (session.Session, error)
 	UpdateTitle(ctx context.Context, sessionID, title string) (session.Session, error)
+	UpdateMetadata(ctx context.Context, sessionID string, metadata map[string]any) (session.Session, error)
 	ListByBot(ctx context.Context, botID string) ([]session.Session, error)
 	Create(ctx context.Context, input session.CreateInput) (session.Session, error)
 }

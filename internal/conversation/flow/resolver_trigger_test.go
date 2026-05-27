@@ -35,6 +35,10 @@ func (*fakeBackgroundSessionService) UpdateTitle(context.Context, string, string
 	return session.Session{}, errors.New("unexpected UpdateTitle call")
 }
 
+func (*fakeBackgroundSessionService) UpdateMetadata(context.Context, string, map[string]any) (session.Session, error) {
+	return session.Session{}, errors.New("unexpected UpdateMetadata call")
+}
+
 type fakeBackgroundRouteService struct {
 	getByIDFn func(ctx context.Context, routeID string) (route.Route, error)
 }

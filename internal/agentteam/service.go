@@ -197,6 +197,26 @@ func (s *Service) GetTeam(ctx context.Context, id string) (Team, error) {
 	return s.store.GetTeam(ctx, id)
 }
 
+// assertTeamExists is the guard used by collection-style endpoints
+// (ListMembers, ListIssuesByTeam, ListOpenIssuesByTeam) so a bogus
+// team_id fails loudly with `team not found: <id>` instead of silently
+// returning an empty list. Empty / unparseable IDs surface as
+// invalid-input errors so callers can distinguish the two failure
+// modes.
+func (s *Service) assertTeamExists(ctx context.Context, teamID string) error {
+	cleaned := strings.TrimSpace(teamID)
+	if cleaned == "" {
+		return fmt.Errorf("%w: team_id required", ErrInvalidInput)
+	}
+	if _, err := s.store.GetTeam(ctx, cleaned); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return fmt.Errorf("team not found: %s", cleaned)
+		}
+		return err
+	}
+	return nil
+}
+
 // GetTeamForOwner returns the team only when it belongs to ownerUserID.
 func (s *Service) GetTeamForOwner(ctx context.Context, id, ownerUserID string) (Team, error) {
 	if s.store == nil {
@@ -360,6 +380,9 @@ func (s *Service) ListMembers(ctx context.Context, teamID string) ([]Member, err
 	if s.store == nil {
 		return nil, errors.New("agentteam: store not configured")
 	}
+	if err := s.assertTeamExists(ctx, teamID); err != nil {
+		return nil, err
+	}
 	return s.store.ListMembers(ctx, teamID)
 }
 
@@ -500,6 +523,9 @@ func (s *Service) ListIssuesByTeam(ctx context.Context, teamID string) ([]Issue,
 	if s.store == nil {
 		return nil, errors.New("agentteam: store not configured")
 	}
+	if err := s.assertTeamExists(ctx, teamID); err != nil {
+		return nil, err
+	}
 	return s.store.ListIssuesByTeam(ctx, teamID)
 }
 
@@ -507,6 +533,9 @@ func (s *Service) ListIssuesByTeam(ctx context.Context, teamID string) ([]Issue,
 func (s *Service) ListOpenIssuesByTeam(ctx context.Context, teamID string) ([]Issue, error) {
 	if s.store == nil {
 		return nil, errors.New("agentteam: store not configured")
+	}
+	if err := s.assertTeamExists(ctx, teamID); err != nil {
+		return nil, err
 	}
 	return s.store.ListOpenIssuesByTeam(ctx, teamID)
 }
