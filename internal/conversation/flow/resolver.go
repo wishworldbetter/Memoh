@@ -232,6 +232,13 @@ func (r *Resolver) TriggerHandoff(ctx context.Context, handoff agentteam.Handoff
 		r.logger.Warn("mark handoff dispatched failed", slog.String("handoff_id", handoff.ID), slog.Any("error", err))
 	}
 	cfg = r.prepareRunConfig(ctx, cfg)
+	// Transition dispatched → running right before the model starts producing
+	// so the UI can distinguish "queued / preparing" from "actively generating".
+	// dispatched persists only for the prepareRunConfig window above; once the
+	// agent run begins we move forward.
+	if _, err := r.teamService.Store().MarkHandoffRunning(ctx, handoff.ID, sessionID); err != nil {
+		r.logger.Warn("mark handoff running failed", slog.String("handoff_id", handoff.ID), slog.Any("error", err))
+	}
 	result, err := r.agent.Generate(ctx, cfg)
 	if err != nil {
 		return fmt.Errorf("agent generate: %w", err)
@@ -248,7 +255,44 @@ func (r *Resolver) TriggerHandoff(ctx context.Context, handoff agentteam.Handoff
 			)
 		}
 	}
+	// agent.Generate returned without error. If the bot called issue_comment,
+	// dispatcher.finalizeAndReturn already pushed this handoff to a terminal
+	// state synchronously. Otherwise the bot stayed silent and nobody else
+	// will close it — do that here so the issue UI doesn't render
+	// "X is running" forever.
+	r.closeSilentHandoff(ctx, handoff.ID)
 	return nil
+}
+
+// closeSilentHandoff is the tail of TriggerHandoff. agent.Generate is
+// synchronous, so by the time we get here the bot has either taken a
+// terminal action (issue_comment → finalizeAndReturn → CompleteHandoff)
+// or chosen not to act at all. In the second case the handoff would
+// otherwise stay pinned at pending/dispatched/running indefinitely; we
+// close it with an empty result_comment_id, which the frontend can later
+// use to render "silent" instead of "completed (replied)".
+func (r *Resolver) closeSilentHandoff(ctx context.Context, handoffID string) {
+	if r.teamService == nil || strings.TrimSpace(handoffID) == "" {
+		return
+	}
+	cur, err := r.teamService.Store().GetHandoff(ctx, handoffID)
+	if err != nil {
+		r.logger.Warn("load handoff for silent close failed",
+			slog.String("handoff_id", handoffID),
+			slog.Any("error", err),
+		)
+		return
+	}
+	switch cur.Status {
+	case agentteam.HandoffPending, agentteam.HandoffDispatched, agentteam.HandoffRunning:
+		if _, cerr := r.teamService.Store().CompleteHandoff(ctx, handoffID, ""); cerr != nil {
+			r.logger.Warn("close silent handoff failed",
+				slog.String("handoff_id", handoffID),
+				slog.Any("error", cerr),
+			)
+		}
+	default:
+	}
 }
 
 // ensureHandoffSession looks up (or creates) the stable bot_session row
