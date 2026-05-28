@@ -53,6 +53,8 @@
             :disabled="creating || !issueForm.title.trim()"
             :require-content="false"
             :rows="7"
+            :members="mentionPool"
+            :bots="bots"
             @submit="submitIssue"
           >
             <template #secondary-actions>
@@ -120,7 +122,7 @@
 </template>
 
 <script setup lang="ts">
-import type { HandlersMemberResponse } from '@memohai/sdk'
+import type { AccountsAccount, BotsBot, HandlersMemberResponse } from '@memohai/sdk'
 import { computed, reactive, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
@@ -139,11 +141,14 @@ import {
 import {
   getTeamsByTeamId,
   getTeamsByTeamIdMembers,
+  getUsers,
   postTeamsByTeamIdIssues,
 } from '@memohai/sdk'
+import { getBotsQuery } from '@memohai/sdk/colada'
 import { resolveApiErrorMessage } from '@/utils/api-error'
 import IssueMarkdownComposer from './components/IssueMarkdownComposer.vue'
 import IssueSidebarSection from './components/IssueSidebarSection.vue'
+import { useMentionPool } from './composables/useMentionPool'
 
 type IssueStatus = 'backlog' | 'todo' | 'in_progress' | 'blocked' | 'review' | 'done' | 'cancelled'
 
@@ -190,8 +195,22 @@ const { data: membersData } = useQuery({
   enabled: () => !!teamId.value,
 })
 
+const { data: botListData } = useQuery(getBotsQuery())
+
+const { data: userListData } = useQuery({
+  key: () => ['users-for-mention'],
+  query: async () => {
+    const { data, error } = await getUsers()
+    if (error) throw error
+    return data?.items ?? []
+  },
+})
+
 const team = computed(() => teamData.value)
 const members = computed(() => membersData.value ?? [])
+const bots = computed<BotsBot[]>(() => botListData.value?.items ?? [])
+const allUsers = computed<AccountsAccount[]>(() => userListData.value ?? [])
+const mentionPool = useMentionPool(members, bots, allUsers)
 const assignableMembers = computed(() =>
   members.value.filter((member) => member.member_type === 'bot' ? !!member.bot_id : !!member.user_id),
 )

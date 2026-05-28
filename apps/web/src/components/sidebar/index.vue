@@ -96,44 +96,7 @@
                 v-for="team in teams"
                 :key="team.id"
               >
-                <SidebarMenuButton
-                  :tooltip="team.name"
-                  as-child
-                >
-                  <button
-                    :class="[
-                      'group/team flex items-center gap-2.5 w-full h-9.5 px-2.5 rounded-lg transition-colors',
-                      'group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0',
-                      isTeamActive(team.id)
-                        ? 'bg-sidebar-accent'
-                        : 'hover:bg-sidebar-accent/60',
-                    ]"
-                    @click="goToTeam(team.id)"
-                  >
-                    <div class="size-6.5 shrink-0 rounded-full border border-border bg-accent overflow-hidden p-px group-data-[collapsible=icon]:mx-auto">
-                      <img
-                        v-if="team.avatar_url && !teamImageError[team.id ?? '']"
-                        :src="team.avatar_url"
-                        :alt="team.name"
-                        class="size-full rounded-full object-cover"
-                        @error="() => { if (team.id) teamImageError[team.id] = true }"
-                      >
-                      <span
-                        v-else
-                        class="size-full flex items-center justify-center text-[8px] font-medium text-muted-foreground"
-                      >
-                        <Users
-                          v-if="!teamInitials(team)"
-                          class="size-3"
-                        />
-                        <template v-else>
-                          {{ teamInitials(team) }}
-                        </template>
-                      </span>
-                    </div>
-                    <span class="text-xs font-medium text-foreground truncate flex-1 text-left group-data-[collapsible=icon]:hidden">{{ team.name }}</span>
-                  </button>
-                </SidebarMenuButton>
+                <TeamItem :team="team" />
               </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
@@ -165,12 +128,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, inject, reactive } from 'vue'
+import { computed, inject } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useQuery } from '@pinia/colada'
 import { getBotsQuery } from '@memohai/sdk/colada'
-import type { BotsBot } from '@memohai/sdk'
+import type { BotsBot, HandlersTeamResponse } from '@memohai/sdk'
 import {
   Button,
   Sidebar,
@@ -186,10 +149,12 @@ import {
   SidebarRail,
   useSidebar,
 } from '@memohai/ui'
-import { Plus, LoaderCircle, Settings, PanelLeftClose, PanelLeftOpen, Users } from 'lucide-vue-next'
+import { Plus, LoaderCircle, Settings, PanelLeftClose, PanelLeftOpen } from 'lucide-vue-next'
 import { getTeams } from '@memohai/sdk'
 import BotItem from './bot-item.vue'
+import TeamItem from './team-item.vue'
 import { usePinnedBots } from '@/composables/usePinnedBots'
+import { usePinnedTeams } from '@/composables/usePinnedTeams'
 import { DesktopShellKey } from '@/lib/desktop-shell'
 
 const router = useRouter()
@@ -203,6 +168,7 @@ const macTopInset = computed(() =>
   && navigator.platform.toLowerCase().includes('mac'),
 )
 const { sortBots } = usePinnedBots()
+const { sortTeams } = usePinnedTeams()
 
 const { data: botData, isLoading } = useQuery(getBotsQuery())
 const bots = computed<BotsBot[]>(() => sortBots(botData.value?.items ?? []))
@@ -215,25 +181,7 @@ const { data: teamsData } = useQuery({
     return data ?? []
   },
 })
-const teams = computed(() => teamsData.value ?? [])
-// 头像加载失败的 team id 集合：渲染时降级到字母 / Users 图标。
-const teamImageError = reactive<Record<string, boolean>>({})
+const teams = computed<HandlersTeamResponse[]>(() => sortTeams(teamsData.value ?? []))
 
 const isSettingsActive = computed(() => route.path.startsWith('/settings'))
-
-function isTeamActive(teamId: string | undefined): boolean {
-  if (!teamId) return false
-  return route.path.startsWith(`/teams/${teamId}`)
-}
-
-function goToTeam(teamId: string | undefined) {
-  if (!teamId) return
-  router.push({ name: 'team-workspace', params: { teamId } })
-}
-
-function teamInitials(team: { name?: string }): string {
-  const label = (team.name ?? '').trim()
-  if (!label) return ''
-  return label.slice(0, 2).toUpperCase()
-}
 </script>

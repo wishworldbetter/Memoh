@@ -102,12 +102,26 @@
               v-if="editingDescription"
               class="space-y-3"
             >
-              <Textarea
-                v-model="descriptionDraft"
-                :placeholder="t('teams.issueDescriptionPlaceholder')"
-                rows="6"
-                class="!text-sm leading-6 placeholder:text-sm"
-              />
+              <div class="relative">
+                <Textarea
+                  ref="descriptionTextareaRef"
+                  v-model="descriptionDraft"
+                  :placeholder="t('teams.issueDescriptionPlaceholder')"
+                  rows="6"
+                  class="!text-sm leading-6 placeholder:text-sm"
+                />
+                <MentionSuggestList
+                  :open="descMentionState.open"
+                  :candidates="descMentionCandidates"
+                  :active-index="descMentionState.activeIndex"
+                  :member-label="descMentionMemberLabel"
+                  :member-avatar="descMentionMemberAvatar"
+                  :member-initials="descMentionMemberInitials"
+                  :caret="descMentionCaret"
+                  @select="applyDescMention"
+                  @hover="(idx: number) => (descMentionState.activeIndex = idx)"
+                />
+              </div>
               <div class="flex justify-end gap-2">
                 <Button
                   variant="ghost"
@@ -193,6 +207,8 @@
               :preview-label="t('common.preview')"
               :empty-preview-label="t('teams.previewEmpty')"
               :disabled="posting"
+              :members="mentionPool"
+              :bots="bots"
               @submit="submitComment"
             />
           </div>
@@ -436,12 +452,13 @@
 
 <script setup lang="ts">
 import type {
+  AccountsAccount,
   BotsBot,
   HandlersCommentResponse,
   HandlersMemberResponse,
   HandlersUpdateIssueRequest,
 } from '@memohai/sdk'
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useMutation, useQuery, useQueryCache } from '@pinia/colada'
@@ -488,6 +505,7 @@ import {
   getTeamsByTeamIdIssuesByIssueIdComments,
   getTeamsByTeamIdIssuesByIssueIdHandoffs,
   getTeamsByTeamIdMembers,
+  getUsers,
   postTeamsByTeamIdIssuesByIssueIdAssign,
   postTeamsByTeamIdIssuesByIssueIdComments,
   putTeamsByTeamIdIssuesByIssueId,
@@ -497,6 +515,9 @@ import IssueMarkdownComposer from './components/IssueMarkdownComposer.vue'
 import IssueSidebarSection from './components/IssueSidebarSection.vue'
 import IssueTimelineItem from './components/IssueTimelineItem.vue'
 import MentionMarkdown from './components/MentionMarkdown.vue'
+import MentionSuggestList from './components/MentionSuggestList.vue'
+import { useMentionPool } from './composables/useMentionPool'
+import { useMentionSuggest } from './composables/useMentionSuggest'
 
 type IssueStatus = 'backlog' | 'todo' | 'in_progress' | 'blocked' | 'review' | 'done' | 'cancelled'
 
@@ -583,12 +604,23 @@ const { data: botListData } = useQuery({
   },
 })
 
+const { data: userListData } = useQuery({
+  key: () => ['users-for-mention'],
+  query: async () => {
+    const { data, error } = await getUsers()
+    if (error) throw error
+    return data?.items ?? []
+  },
+})
+
 const team = computed(() => teamData.value)
 const issue = computed(() => issueData.value)
 const comments = computed(() => commentsData.value ?? [])
 const handoffs = computed(() => handoffsData.value ?? [])
 const members = computed(() => membersData.value ?? [])
 const bots = computed<BotsBot[]>(() => botListData.value ?? [])
+const allUsers = computed<AccountsAccount[]>(() => userListData.value ?? [])
+const mentionPool = useMentionPool(members, bots, allUsers)
 const assignableMembers = computed(() =>
   members.value.filter((member) => member.member_type === 'bot' ? !!member.bot_id : !!member.user_id),
 )
@@ -600,10 +632,48 @@ const titleDraft = ref('')
 const descriptionDraft = ref('')
 const editingTitle = ref(false)
 const editingDescription = ref(false)
+const descriptionTextareaRef = ref<InstanceType<typeof Textarea> | null>(null)
 const newComment = ref('')
 const showMemberDialog = ref(false)
 const selectedMember = ref<HandlersMemberResponse | null>(null)
 const showDelete = ref(false)
+
+function resolveDescriptionTextareaEl(): HTMLTextAreaElement | null {
+  const root = descriptionTextareaRef.value?.$el as HTMLElement | undefined
+  if (!root) return null
+  if (root instanceof HTMLTextAreaElement) return root
+  return root.querySelector('textarea')
+}
+
+const {
+  suggestion: descMentionState,
+  candidates: descMentionCandidates,
+  caret: descMentionCaret,
+  applySelection: applyDescMention,
+  memberLabel: descMentionMemberLabel,
+  memberAvatar: descMentionMemberAvatar,
+  memberInitials: descMentionMemberInitials,
+  bindTextarea: bindDescMention,
+  unbindTextarea: unbindDescMention,
+} = useMentionSuggest({
+  getTextarea: resolveDescriptionTextareaEl,
+  emitUpdate: (next) => {
+    descriptionDraft.value = next
+  },
+  members: mentionPool,
+  bots,
+  autoBind: false,
+})
+
+watch(editingDescription, async (val) => {
+  if (val) {
+    await nextTick()
+    bindDescMention()
+  }
+  else {
+    unbindDescMention()
+  }
+})
 
 watch(issue, (next) => {
   titleDraft.value = next?.title ?? ''

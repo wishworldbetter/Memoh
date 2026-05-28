@@ -25,12 +25,26 @@
         value="write"
         class="m-0 p-2.5"
       >
-        <Textarea
-          v-model="value"
-          :placeholder="placeholder"
-          :rows="rows"
-          class="min-h-24 border-0 p-0 !text-sm leading-6 shadow-none placeholder:text-sm focus-visible:ring-0"
-        />
+        <div class="relative">
+          <Textarea
+            ref="textareaRef"
+            v-model="value"
+            :placeholder="placeholder"
+            :rows="rows"
+            class="min-h-24 border-0 p-0 !text-sm leading-6 shadow-none placeholder:text-sm focus-visible:ring-0"
+          />
+          <MentionSuggestList
+            :open="suggestion.open"
+            :candidates="candidates"
+            :active-index="suggestion.activeIndex"
+            :member-label="memberLabel"
+            :member-avatar="memberAvatar"
+            :member-initials="memberInitials"
+            :caret="caret"
+            @select="applySelection"
+            @hover="(idx: number) => (suggestion.activeIndex = idx)"
+          />
+        </div>
       </TabsContent>
 
       <TabsContent
@@ -71,7 +85,8 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import type { BotsBot, HandlersMemberResponse } from '@memohai/sdk'
+import { computed, ref, toRef } from 'vue'
 import { Send } from 'lucide-vue-next'
 import {
   Button,
@@ -82,6 +97,8 @@ import {
   Textarea,
 } from '@memohai/ui'
 import MarkdownPreview from '@/components/markdown-preview/index.vue'
+import MentionSuggestList from './MentionSuggestList.vue'
+import { useMentionSuggest } from '../composables/useMentionSuggest'
 
 const props = withDefaults(defineProps<{
   modelValue: string
@@ -94,12 +111,16 @@ const props = withDefaults(defineProps<{
   disabled?: boolean
   requireContent?: boolean
   rows?: number
+  members?: HandlersMemberResponse[]
+  bots?: BotsBot[]
 }>(), {
   placeholder: '',
   helper: '',
   disabled: false,
   requireContent: true,
   rows: 4,
+  members: () => [],
+  bots: () => [],
 })
 
 const emit = defineEmits<{
@@ -111,5 +132,29 @@ const activeTab = ref('write')
 const value = computed({
   get: () => props.modelValue,
   set: (next: string) => emit('update:modelValue', next),
+})
+
+const textareaRef = ref<InstanceType<typeof Textarea> | null>(null)
+
+function resolveTextareaEl(): HTMLTextAreaElement | null {
+  const root = textareaRef.value?.$el as HTMLElement | undefined
+  if (!root) return null
+  if (root instanceof HTMLTextAreaElement) return root
+  return root.querySelector('textarea')
+}
+
+const {
+  suggestion,
+  candidates,
+  caret,
+  applySelection,
+  memberLabel,
+  memberAvatar,
+  memberInitials,
+} = useMentionSuggest({
+  getTextarea: resolveTextareaEl,
+  emitUpdate: (next) => emit('update:modelValue', next),
+  members: toRef(props, 'members'),
+  bots: toRef(props, 'bots'),
 })
 </script>
