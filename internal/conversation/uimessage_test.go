@@ -468,6 +468,63 @@ func TestUIMessageStreamConverterMergesRepeatedToolCallStart(t *testing.T) {
 	}
 }
 
+func TestUIMessageStreamConverterToolCallInputStartThenStartBackfillsInput(t *testing.T) {
+	t.Parallel()
+
+	converter := NewUIMessageStreamConverter()
+
+	inputStart := converter.HandleEvent(UIMessageStreamEvent{
+		Type:       "tool_call_input_start",
+		ToolName:   "write",
+		ToolCallID: "call-1",
+	})
+	if len(inputStart) != 1 || inputStart[0].Type != UIMessageTool {
+		t.Fatalf("unexpected initial tool placeholder: %#v", inputStart)
+	}
+	if inputStart[0].Input != nil {
+		t.Fatalf("expected input-start placeholder to have nil input, got %#v", inputStart[0].Input)
+	}
+	if inputStart[0].Running == nil || !*inputStart[0].Running {
+		t.Fatalf("expected input-start placeholder to be running, got %#v", inputStart[0])
+	}
+
+	fullInput := map[string]any{"path": "/tmp/long.txt"}
+	start := converter.HandleEvent(UIMessageStreamEvent{
+		Type:       "tool_call_start",
+		ToolName:   "write",
+		ToolCallID: "call-1",
+		Input:      fullInput,
+	})
+	if len(start) != 1 {
+		t.Fatalf("expected one updated tool snapshot, got %#v", start)
+	}
+	if start[0].ID != inputStart[0].ID {
+		t.Fatalf("expected tool start to reuse message id, got input-start=%d start=%d", inputStart[0].ID, start[0].ID)
+	}
+	if !reflect.DeepEqual(start[0].Input, fullInput) {
+		t.Fatalf("expected tool start to backfill input, got %#v", start[0].Input)
+	}
+	if start[0].Running == nil || !*start[0].Running {
+		t.Fatalf("expected merged tool message to stay running, got %#v", start[0])
+	}
+
+	end := converter.HandleEvent(UIMessageStreamEvent{
+		Type:       "tool_call_end",
+		ToolName:   "write",
+		ToolCallID: "call-1",
+		Output:     map[string]any{"ok": true},
+	})
+	if len(end) != 1 || end[0].ID != inputStart[0].ID {
+		t.Fatalf("expected tool end to reuse merged message id, got %#v", end)
+	}
+	if !reflect.DeepEqual(end[0].Input, fullInput) {
+		t.Fatalf("expected tool end to preserve merged input, got %#v", end[0].Input)
+	}
+	if end[0].Running == nil || *end[0].Running {
+		t.Fatalf("expected tool end to mark message complete, got %#v", end[0])
+	}
+}
+
 func TestUIMessageStreamConverterKeepsParallelSameNameToolCallsSeparate(t *testing.T) {
 	t.Parallel()
 
