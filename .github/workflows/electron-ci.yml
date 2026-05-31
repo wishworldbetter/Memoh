@@ -1,4 +1,4 @@
-name: Electron Online CI
+name: Electron CI
 
 on:
   push:
@@ -8,7 +8,7 @@ on:
       - "apps/web/**"
       - "packages/**"
       - "pnpm-lock.yaml"
-      - ".github/workflows/electron-online-ci.yml"
+      - ".github/workflows/electron-ci.yml"
   pull_request:
     branches: ["main"]
     paths:
@@ -16,7 +16,7 @@ on:
       - "apps/web/**"
       - "packages/**"
       - "pnpm-lock.yaml"
-      - ".github/workflows/electron-online-ci.yml"
+      - ".github/workflows/electron-ci.yml"
   workflow_dispatch:
 
 permissions:
