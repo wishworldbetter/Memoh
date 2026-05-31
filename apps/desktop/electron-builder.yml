@@ -48,6 +48,8 @@ dmg:
   sign: true
 linux:
   category: Utility
+  executableName: memoh-local
+  packageName: memoh-local
   target:
     - target: AppImage
       arch: [x64]
