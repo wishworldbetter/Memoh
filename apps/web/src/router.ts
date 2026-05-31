@@ -38,7 +38,7 @@ const routes = [
       {
         // Backwards-compatible redirect for legacy UUID-based chat links.
         path: '/chat/:botName?',
-        redirect: (to: RouteLocationNormalized) => {
+        redirect: (to) => {
           const botName = (to.params.botName as string) ?? ''
           return botName
             ? { name: 'bot', params: { botName } }
