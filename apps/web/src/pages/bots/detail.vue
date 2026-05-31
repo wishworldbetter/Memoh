@@ -330,10 +330,11 @@ const tabList = computed(() => {
     { value: 'schedule', label: 'bots.tabs.schedule', icon: Clock, component: BotSchedule, params: { 'bot-id': bot_id } },
     { value: 'skills', label: 'bots.tabs.skills', icon: BrainCircuit, component: BotSkills, params: { 'bot-id': bot_id } },
   ]
+  const scoped = canManageBot.value ? tabs : tabs.filter(tab => tab.value === 'overview')
   if (isLocalWorkspace.value) {
-    return tabs.filter(tab => tab.value !== 'container' && tab.value !== 'network' && tab.value !== 'desktop')
+    return scoped.filter(tab => tab.value !== 'container' && tab.value !== 'network' && tab.value !== 'desktop')
   }
-  return tabs
+  return scoped
 })
 
 const searchQuery = ref('')

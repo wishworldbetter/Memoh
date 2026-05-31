@@ -623,6 +623,9 @@
         </form>
       </section>
     </Transition>
+
+    <!-- Workspace member access -->
+    <BotUserAccess :bot-id="botId" />
   </div>
 </template>
 
