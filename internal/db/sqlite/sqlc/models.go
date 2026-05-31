@@ -203,6 +203,17 @@ type BotStorageBinding struct {
 	UpdatedAt         string `json:"updated_at"`
 }
 
+type BotUserGrant struct {
+	ID              string         `json:"id"`
+	BotID           string         `json:"bot_id"`
+	SubjectType     string         `json:"subject_type"`
+	UserID          sql.NullString `json:"user_id"`
+	Permissions     string         `json:"permissions"`
+	CreatedByUserID sql.NullString `json:"created_by_user_id"`
+	CreatedAt       string         `json:"created_at"`
+	UpdatedAt       string         `json:"updated_at"`
+}
+
 type ChannelIdentity struct {
 	ID               string         `json:"id"`
 	ChannelType      string         `json:"channel_type"`

@@ -17,7 +17,11 @@ type Bot struct {
 	Status          string         `json:"status"`
 	CheckState      string         `json:"check_state"`
 	CheckIssueCount int32          `json:"check_issue_count"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
+	// CurrentUserPermissions lists the effective access permissions of the
+	// requesting user on this bot (e.g. "chat", "manage"). It is populated by
+	// the API layer per request and is not persisted.
+	CurrentUserPermissions []string       `json:"current_user_permissions,omitempty"`
+	Metadata               map[string]any `json:"metadata,omitempty"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
 }

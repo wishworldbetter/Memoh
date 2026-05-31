@@ -202,6 +202,17 @@ type BotStorageBinding struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
+type BotUserGrant struct {
+	ID              pgtype.UUID        `json:"id"`
+	BotID           pgtype.UUID        `json:"bot_id"`
+	SubjectType     string             `json:"subject_type"`
+	UserID          pgtype.UUID        `json:"user_id"`
+	Permissions     []byte             `json:"permissions"`
+	CreatedByUserID pgtype.UUID        `json:"created_by_user_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ChannelIdentity struct {
 	ID               pgtype.UUID        `json:"id"`
 	ChannelType      string             `json:"channel_type"`

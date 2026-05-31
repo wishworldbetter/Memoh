@@ -1028,6 +1028,37 @@ func (h *UsersHandler) authorizeBotAccess(ctx context.Context, channelIdentityID
 	return AuthorizeBotAccess(ctx, h.botService, h.service, channelIdentityID, botID)
 }
 
+// attachCurrentUserPermissions populates the requesting user's effective access
+// permissions for a single bot.
+func (h *UsersHandler) attachCurrentUserPermissions(ctx context.Context, channelIdentityID string, bot *bots.Bot) error {
+	isAdmin, err := h.service.IsAdmin(ctx, channelIdentityID)
+	if err != nil {
+		return err
+	}
+	perms, err := h.botService.ResolveUserPermissions(ctx, bot.ID, channelIdentityID, isAdmin)
+	if err != nil {
+		return err
+	}
+	bot.CurrentUserPermissions = perms
+	return nil
+}
+
+// attachCurrentUserPermissionsList populates effective permissions for a list of bots.
+func (h *UsersHandler) attachCurrentUserPermissionsList(ctx context.Context, channelIdentityID string, items []bots.Bot) error {
+	isAdmin, err := h.service.IsAdmin(ctx, channelIdentityID)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		perms, err := h.botService.ResolveUserPermissions(ctx, items[i].ID, channelIdentityID, isAdmin)
+		if err != nil {
+			return err
+		}
+		items[i].CurrentUserPermissions = perms
+	}
+	return nil
+}
+
 func (*UsersHandler) requireChannelIdentityID(c echo.Context) (string, error) {
 	return RequireChannelIdentityID(c)
 }

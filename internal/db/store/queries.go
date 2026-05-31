@@ -35,6 +35,13 @@ type Queries interface {
 	CreateAccount(ctx context.Context, arg dbsqlc.CreateAccountParams) (dbsqlc.User, error)
 	CreateBot(ctx context.Context, arg dbsqlc.CreateBotParams) (dbsqlc.CreateBotRow, error)
 	CreateBotACLRule(ctx context.Context, arg dbsqlc.CreateBotACLRuleParams) (dbsqlc.BotAclRule, error)
+	CreateBotUserGrant(ctx context.Context, arg dbsqlc.CreateBotUserGrantParams) (dbsqlc.BotUserGrant, error)
+	DeleteBotUserGrantByID(ctx context.Context, id pgtype.UUID) error
+	GetBotUserGrantByID(ctx context.Context, id pgtype.UUID) (dbsqlc.BotUserGrant, error)
+	ListBotUserGrants(ctx context.Context, botID pgtype.UUID) ([]dbsqlc.ListBotUserGrantsRow, error)
+	ListBotUserGrantsForUser(ctx context.Context, arg dbsqlc.ListBotUserGrantsForUserParams) ([]dbsqlc.ListBotUserGrantsForUserRow, error)
+	UpdateBotUserGrantPermissions(ctx context.Context, arg dbsqlc.UpdateBotUserGrantPermissionsParams) (dbsqlc.BotUserGrant, error)
+	ListAccessibleBots(ctx context.Context, ownerUserID pgtype.UUID) ([]dbsqlc.ListAccessibleBotsRow, error)
 	CreateBotEmailBinding(ctx context.Context, arg dbsqlc.CreateBotEmailBindingParams) (dbsqlc.BotEmailBinding, error)
 	CreateChannelIdentity(ctx context.Context, arg dbsqlc.CreateChannelIdentityParams) (dbsqlc.ChannelIdentity, error)
 	CreateChat(ctx context.Context, arg dbsqlc.CreateChatParams) (dbsqlc.CreateChatRow, error)
