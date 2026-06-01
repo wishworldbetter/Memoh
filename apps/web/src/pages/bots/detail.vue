@@ -509,11 +509,15 @@ watch(botId, () => {
   botNameDraft.value = ''
 })
 
-watch([activeTab, botId], ([tab]) => {
+watch([activeTab, botId, canManageBot], ([tab]) => {
   if (!botId.value) {
     return
   }
   if (tab === 'container') {
+    // Container data is management-only; chat-only members never see this tab.
+    if (!canManageBot.value) {
+      return
+    }
     void loadContainerData(true)
     return
   }

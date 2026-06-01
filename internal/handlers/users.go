@@ -583,7 +583,8 @@ func (h *UsersHandler) ListBotChecks(c echo.Context) error {
 	if botID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "bot id is required")
 	}
-	if _, err := h.authorizeBotAccess(c.Request().Context(), channelIdentityID, botID); err != nil {
+	// Health checks are read-only status; members with chat access may view them.
+	if _, err := AuthorizeBotAccessWithPermission(c.Request().Context(), h.botService, h.service, channelIdentityID, botID, bots.PermissionChat); err != nil {
 		return err
 	}
 	items, err := h.botService.ListChecks(c.Request().Context(), botID)
