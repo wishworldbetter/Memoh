@@ -218,7 +218,9 @@ func (s *Service) AuthorizeAccessWithPermission(ctx context.Context, userID, bot
 	if required == "" {
 		required = PermissionManage
 	}
-	perms, err := s.ResolveUserPermissions(ctx, botID, userID, isAdmin)
+	// Use the resolved bot UUID: botID may be a name slug from the URL, but grant
+	// resolution requires the canonical UUID.
+	perms, err := s.ResolveUserPermissions(ctx, bot.ID, userID, isAdmin)
 	if err != nil {
 		return Bot{}, err
 	}
