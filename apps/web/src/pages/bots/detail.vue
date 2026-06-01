@@ -310,6 +310,8 @@ const isLocalWorkspace = computed(() =>
   isLocalWorkspaceBot(bot.value?.metadata, containerInfo.value?.workspace_backend),
 )
 
+const canManageBot = computed(() => (bot.value?.current_user_permissions ?? []).includes('manage'))
+
 const tabList = computed(() => {
   const bot_id = toValue(botId)
   const tabs = [
