@@ -39,7 +39,7 @@
           class="absolute inset-0"
         >
           <ChatSidebarFiles
-            v-if="currentBotId"
+            v-if="currentBotId && canManage"
             ref="filesPanelRef"
             :bot-id="currentBotId"
           />
@@ -55,7 +55,7 @@
           class="absolute inset-0"
         >
           <ChatSidebarSkills
-            v-if="currentBotId"
+            v-if="currentBotId && canManage"
             :bot-id="currentBotId"
           />
           <div
@@ -70,7 +70,7 @@
           class="absolute inset-0"
         >
           <ChatSidebarMcp
-            v-if="currentBotId"
+            v-if="currentBotId && canManage"
             :bot-id="currentBotId"
           />
           <div
@@ -85,7 +85,7 @@
           class="absolute inset-0"
         >
           <ChatSidebarSchedule
-            v-if="currentBotId"
+            v-if="currentBotId && canManage"
             :bot-id="currentBotId"
           />
           <div
@@ -111,10 +111,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount, nextTick, type Component } from 'vue'
+import { ref, computed, onBeforeUnmount, nextTick, watch, type Component } from 'vue'
 import { useLocalStorage } from '@vueuse/core'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
+import { useQuery } from '@pinia/colada'
+import { getBotsById } from '@memohai/sdk'
 import { MessageSquare, Folder, Sparkles, Plug, CalendarClock } from 'lucide-vue-next'
 import { useChatStore } from '@/store/chat-list'
 import ChatSidebarSessions from './chat-sidebar-sessions.vue'
@@ -135,20 +137,45 @@ const { t } = useI18n()
 const chatStore = useChatStore()
 const { currentBotId } = storeToRefs(chatStore)
 
-const activityTabs = computed<ActivityTab[]>(() => [
-  { id: 'sessions', label: t('chat.activityTabSessions'), icon: MessageSquare },
-  { id: 'files', label: t('chat.activityTabFiles'), icon: Folder },
-  { id: 'skills', label: t('chat.activityTabSkills'), icon: Sparkles },
-  { id: 'mcp', label: t('chat.activityTabMcp'), icon: Plug },
-  { id: 'schedule', label: t('chat.activityTabSchedule'), icon: CalendarClock },
-])
+// Resolve the caller's permissions on the current bot. The files/skills/mcp/
+// schedule panels are management surfaces; members granted only chat access
+// should see just the conversation, not these panels (the backend rejects
+// them with "bot access denied" anyway).
+const { data: currentBot } = useQuery({
+  key: () => ['bot', currentBotId.value ?? ''],
+  query: async () => {
+    const { data } = await getBotsById({ path: { id: currentBotId.value! }, throwOnError: true })
+    return data
+  },
+  enabled: () => !!currentBotId.value,
+})
+
+const canManage = computed(() => (currentBot.value?.current_user_permissions ?? []).includes('manage'))
+
+const activityTabs = computed<ActivityTab[]>(() => {
+  const tabs: ActivityTab[] = [
+    { id: 'sessions', label: t('chat.activityTabSessions'), icon: MessageSquare },
+  ]
+  if (canManage.value) {
+    tabs.push(
+      { id: 'files', label: t('chat.activityTabFiles'), icon: Folder },
+      { id: 'skills', label: t('chat.activityTabSkills'), icon: Sparkles },
+      { id: 'mcp', label: t('chat.activityTabMcp'), icon: Plug },
+      { id: 'schedule', label: t('chat.activityTabSchedule'), icon: CalendarClock },
+    )
+  }
+  return tabs
+})
 
 const activeTab = useLocalStorage<ActivityTabId>('chat-sidebar-active-tab', 'sessions')
 
-// Guard against stale persisted value (e.g. legacy 'terminal' tab).
-if (!activityTabs.value.some((t) => t.id === activeTab.value)) {
-  activeTab.value = 'sessions'
-}
+// Guard against stale persisted value (e.g. legacy 'terminal' tab) or a panel
+// the current member no longer has access to.
+watch(activityTabs, (tabs) => {
+  if (!tabs.some((tab) => tab.id === activeTab.value)) {
+    activeTab.value = 'sessions'
+  }
+}, { immediate: true })
 
 const filesPanelRef = ref<InstanceType<typeof ChatSidebarFiles> | null>(null)
 

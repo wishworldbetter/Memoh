@@ -79,7 +79,7 @@ func (h *SessionHandler) CreateSession(c echo.Context) error {
 	if botID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "bot id is required")
 	}
-	bot, err := AuthorizeBotAccess(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID)
+	bot, err := AuthorizeBotAccessWithPermission(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID, bots.PermissionChat)
 	if err != nil {
 		return err
 	}
@@ -129,7 +129,7 @@ func (h *SessionHandler) ListSessions(c echo.Context) error {
 	if botID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "bot id is required")
 	}
-	if _, err := AuthorizeBotAccess(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID); err != nil {
+	if _, err := AuthorizeBotAccessWithPermission(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID, bots.PermissionChat); err != nil {
 		return err
 	}
 	sessions, err := h.sessionService.ListByBot(c.Request().Context(), botID)
@@ -158,7 +158,7 @@ func (h *SessionHandler) GetSession(c echo.Context) error {
 	if botID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "bot id is required")
 	}
-	if _, err := AuthorizeBotAccess(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID); err != nil {
+	if _, err := AuthorizeBotAccessWithPermission(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID, bots.PermissionChat); err != nil {
 		return err
 	}
 	sessionID := strings.TrimSpace(c.Param("session_id"))
@@ -195,7 +195,7 @@ func (h *SessionHandler) UpdateSession(c echo.Context) error {
 	if botID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "bot id is required")
 	}
-	bot, err := AuthorizeBotAccess(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID)
+	bot, err := AuthorizeBotAccessWithPermission(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID, bots.PermissionChat)
 	if err != nil {
 		return err
 	}
@@ -292,7 +292,7 @@ func (h *SessionHandler) DeleteSession(c echo.Context) error {
 	if botID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "bot id is required")
 	}
-	if _, err := AuthorizeBotAccess(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID); err != nil {
+	if _, err := AuthorizeBotAccessWithPermission(c.Request().Context(), h.botService, h.accountService, channelIdentityID, botID, bots.PermissionChat); err != nil {
 		return err
 	}
 	sessionID := strings.TrimSpace(c.Param("session_id"))

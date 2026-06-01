@@ -80,7 +80,7 @@ func (h *SessionInfoHandler) GetSessionInfo(c echo.Context) error {
 	if botID == "" {
 		return echo.NewHTTPError(http.StatusBadRequest, "bot id is required")
 	}
-	if _, err := AuthorizeBotAccess(c.Request().Context(), h.botService, h.accountService, userID, botID); err != nil {
+	if _, err := AuthorizeBotAccessWithPermission(c.Request().Context(), h.botService, h.accountService, userID, botID, bots.PermissionChat); err != nil {
 		return err
 	}
 	sessionID := strings.TrimSpace(c.Param("session_id"))
