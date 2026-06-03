@@ -54,6 +54,16 @@
         v-if="!isLocalWorkspace"
         type="button"
         class="inline-flex items-center justify-center size-8 rounded-md text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground transition-colors [-webkit-app-region:no-drag]"
+        :title="t('chat.tabBarToolkit.openBrowser')"
+        :aria-label="t('chat.tabBarToolkit.openBrowser')"
+        @click="store.openBrowser()"
+      >
+        <Globe class="size-4" />
+      </button>
+      <button
+        v-if="!isLocalWorkspace"
+        type="button"
+        class="inline-flex items-center justify-center size-8 rounded-md text-muted-foreground hover:bg-sidebar-accent/40 hover:text-foreground transition-colors [-webkit-app-region:no-drag]"
         :title="t('chat.tabBarToolkit.openDisplay')"
         :aria-label="t('chat.tabBarToolkit.openDisplay')"
         @click="store.openDisplay()"
@@ -94,7 +104,7 @@
 import { computed, nextTick, watch, type Component, useTemplateRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { storeToRefs } from 'pinia'
-import { File as FileIcon, MessageSquare, Monitor, MoreHorizontal, TerminalSquare, X } from 'lucide-vue-next'
+import { File as FileIcon, Globe, MessageSquare, Monitor, MoreHorizontal, TerminalSquare, X } from 'lucide-vue-next'
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -182,6 +192,7 @@ function tabIcon(tab: WorkspaceTab): Component {
     case 'file': return FileIcon
     case 'terminal': return TerminalSquare
     case 'display': return Monitor
+    case 'browser': return Globe
   }
 }
 
@@ -197,6 +208,9 @@ function resolveTitle(tab: WorkspaceTab): string {
   }
   if (tab.type === 'display') {
     return tab.title || t('chat.display.title')
+  }
+  if (tab.type === 'browser') {
+    return tab.address || tab.title || t('chat.browser.title')
   }
   return tab.title || tab.filePath
 }

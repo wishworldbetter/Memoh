@@ -16,6 +16,7 @@ export type WorkspaceTab =
   | { id: string; type: 'file'; filePath: string; title: string }
   | { id: string; type: 'terminal'; title: string }
   | { id: string; type: 'display'; title: string }
+  | { id: string; type: 'browser'; address: string; title: string }
   | { id: string; type: 'draft'; title: string }
 
 const DRAFT_TAB_ID = 'draft'
@@ -25,6 +26,7 @@ interface BotTabState {
   activeId: string | null
   terminalCounter: number
   displayCounter: number
+  browserCounter: number
   dirtyFileTabs: Record<string, boolean>
 }
 
@@ -46,13 +48,17 @@ function displayTabId(counter: number): string {
   return `display:${counter}`
 }
 
+function browserTabId(counter: number): string {
+  return `browser:${counter}`
+}
+
 function fileBaseName(filePath: string): string {
   const idx = filePath.lastIndexOf('/')
   return idx >= 0 ? filePath.slice(idx + 1) : filePath
 }
 
 function emptyBotState(): BotTabState {
-  return { tabs: [], activeId: null, terminalCounter: 0, displayCounter: 0, dirtyFileTabs: {} }
+  return { tabs: [], activeId: null, terminalCounter: 0, displayCounter: 0, browserCounter: 0, dirtyFileTabs: {} }
 }
 
 export const useWorkspaceTabsStore = defineStore('workspace-tabs', () => {
@@ -75,7 +81,7 @@ export const useWorkspaceTabsStore = defineStore('workspace-tabs', () => {
         tab.type === 'vnc' ? { id: tab.id, type: 'display' as const, title: tab.title } : tab,
       ) as WorkspaceTab[]
       const tabsChanged = tabs.some((tab, index) => tab !== currentTabs[index])
-      if (cur.terminalCounter === undefined || cur.displayCounter === undefined || cur.dirtyFileTabs === undefined || tabsChanged) {
+      if (cur.terminalCounter === undefined || cur.displayCounter === undefined || cur.browserCounter === undefined || cur.dirtyFileTabs === undefined || tabsChanged) {
         storage.value = {
           ...storage.value,
           [bid]: {
@@ -83,6 +89,7 @@ export const useWorkspaceTabsStore = defineStore('workspace-tabs', () => {
             activeId: cur.activeId ?? null,
             terminalCounter: cur.terminalCounter ?? 0,
             displayCounter: cur.displayCounter ?? (tabs.some((tab) => tab.type === 'display') ? 1 : 0),
+            browserCounter: cur.browserCounter ?? tabs.filter((tab) => tab.type === 'browser').length,
             dirtyFileTabs: cur.dirtyFileTabs ?? {},
           },
         }
@@ -115,6 +122,7 @@ export const useWorkspaceTabsStore = defineStore('workspace-tabs', () => {
         activeId: state.activeId,
         terminalCounter: state.terminalCounter,
         displayCounter: state.displayCounter,
+        browserCounter: state.browserCounter,
         dirtyFileTabs: { ...state.dirtyFileTabs },
       },
     }
@@ -278,6 +286,25 @@ export const useWorkspaceTabsStore = defineStore('workspace-tabs', () => {
     })
   }
 
+  function openBrowser(address = 'localhost:5173/') {
+    const state = ensureBot(currentBotId.value)
+    if (!state) return
+    const nextCounter = state.browserCounter + 1
+    const id = browserTabId(nextCounter)
+    const tab: WorkspaceTab = {
+      id,
+      type: 'browser',
+      address,
+      title: `Browser ${nextCounter}`,
+    }
+    commit({
+      ...state,
+      tabs: [...state.tabs, tab],
+      activeId: id,
+      browserCounter: nextCounter,
+    })
+  }
+
   function closeTab(id: string) {
     const state = ensureBot(currentBotId.value)
     if (!state) return
@@ -332,9 +359,21 @@ export const useWorkspaceTabsStore = defineStore('workspace-tabs', () => {
         return dirty[tab.id] === true
       case 'terminal':
       case 'display':
+      case 'browser':
       case 'draft':
         return false
     }
+  }
+
+  function updateBrowserAddress(tabId: string, address: string) {
+    const state = ensureBot(currentBotId.value)
+    if (!state) return
+    const next = state.tabs.map((tab) =>
+      tab.id === tabId && tab.type === 'browser'
+        ? { ...tab, address, title: address || tab.title }
+        : tab,
+    )
+    commit({ ...state, tabs: next })
   }
 
   function closeFinished() {
@@ -454,6 +493,7 @@ export const useWorkspaceTabsStore = defineStore('workspace-tabs', () => {
     openFile,
     openTerminal,
     openDisplay,
+    openBrowser,
     openDraft,
     promoteDraftToChat,
     closeTab,
@@ -461,6 +501,7 @@ export const useWorkspaceTabsStore = defineStore('workspace-tabs', () => {
     closeAll,
     closeFinished,
     setFileDirty,
+    updateBrowserAddress,
     updateChatTitle,
     setActive,
     resetBot,
