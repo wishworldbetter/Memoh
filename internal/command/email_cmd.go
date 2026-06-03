@@ -6,89 +6,140 @@ import (
 
 func (h *Handler) buildEmailGroup() *CommandGroup {
 	g := newCommandGroup("email", "View email configuration")
+	g.DefaultAction = "outbox" // bare /email lands on recent sends
 	g.Register(SubCommand{
 		Name:  "providers",
 		Usage: "providers - List email providers",
-		Handler: func(cc CommandContext) (string, error) {
+		ResultHandler: func(cc CommandContext) (*Result, error) {
 			items, err := h.emailService.ListProviders(cc.Ctx, "")
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if len(items) == 0 {
-				return "No email providers found.", nil
+				return WithButtons(
+					&Result{Text: cc.T("cmd.email.providersEmpty")},
+					ListItem{Label: cc.T("cmd.email.section.bindings"), Action: &ItemAction{Resource: "email", Action: "bindings"}},
+					ListItem{Label: cc.T("cmd.email.section.outbox"), Action: &ItemAction{Resource: "email", Action: "outbox"}},
+				), nil
 			}
-			records := make([][]kv, 0, len(items))
+			records := make([]listRecord, 0, len(items))
 			for _, item := range items {
-				records = append(records, []kv{
-					{"Name", item.Name},
-					{"Provider", item.Provider},
-				})
+				fields := []kv{{cc.T("cmd.common.fieldName"), item.Name}}
+				if eng := distinctProviderEngine(item.Name, item.Provider); eng != "" {
+					fields = append(fields, kv{"", eng})
+				}
+				records = append(records, listRecord{fields: fields})
 			}
-			return formatLimitedItems(records, defaultListLimit, "Use /email bindings to inspect bot bindings."), nil
+			result := buildListResult(cc.T("cmd.email.providersTitle"), "email", "providers", nil, records, cc.Page, defaultListLimit, cc.L)
+			return WithExtraActions(result,
+				ListItem{Label: cc.T("cmd.email.section.bindings"), Action: &ItemAction{Resource: "email", Action: "bindings"}},
+				ListItem{Label: cc.T("cmd.email.section.outbox"), Action: &ItemAction{Resource: "email", Action: "outbox"}},
+			), nil
 		},
 	})
 	g.Register(SubCommand{
 		Name:  "bindings",
 		Usage: "bindings - List bot email bindings",
-		Handler: func(cc CommandContext) (string, error) {
+		ResultHandler: func(cc CommandContext) (*Result, error) {
 			items, err := h.emailService.ListBindings(cc.Ctx, cc.BotID)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if len(items) == 0 {
-				return "No email bindings found.", nil
+				return WithButtons(
+					&Result{Text: cc.T("cmd.email.bindingsEmpty")},
+					ListItem{Label: cc.T("cmd.email.section.providers"), Action: &ItemAction{Resource: "email", Action: "providers"}},
+					ListItem{Label: cc.T("cmd.email.section.outbox"), Action: &ItemAction{Resource: "email", Action: "outbox"}},
+				), nil
 			}
-			records := make([][]kv, 0, len(items))
+			records := make([]listRecord, 0, len(items))
 			for _, item := range items {
-				perms := buildPermString(item.CanRead, item.CanWrite, item.CanDelete)
-				records = append(records, []kv{
-					{"Address", item.EmailAddress},
-					{"Permissions", perms},
-				})
+				perms := buildPermString(cc, item.CanRead, item.CanWrite, item.CanDelete)
+				records = append(records, listRecord{fields: []kv{
+					{cc.T("cmd.email.fieldAddress"), item.EmailAddress},
+					{cc.T("cmd.email.fieldPermissions"), perms},
+				}})
 			}
-			return formatLimitedItems(records, defaultListLimit, "Use /email outbox to inspect recent sends."), nil
+			result := buildListResult(cc.T("cmd.email.bindingsTitle"), "email", "bindings", nil, records, cc.Page, defaultListLimit, cc.L)
+			return WithExtraActions(result,
+				ListItem{Label: cc.T("cmd.email.section.providers"), Action: &ItemAction{Resource: "email", Action: "providers"}},
+				ListItem{Label: cc.T("cmd.email.section.outbox"), Action: &ItemAction{Resource: "email", Action: "outbox"}},
+			), nil
 		},
 	})
 	g.Register(SubCommand{
 		Name:  "outbox",
 		Usage: "outbox - List recently sent emails",
-		Handler: func(cc CommandContext) (string, error) {
-			items, _, err := h.emailOutboxService.ListByBot(cc.Ctx, cc.BotID, 10, 0)
+		// UPSTREAM REPORT (backend, deferred): to offer the same --range time
+		// window as /usage, emailOutboxService.ListByBot + ListEmailOutboxByBot
+		// need created_at From/To params. Pagination already covers "view all".
+		ResultHandler: func(cc CommandContext) (*Result, error) {
+			const pageSize = 10
+			page := cc.Page
+			if page < 0 {
+				page = 0
+			}
+			items, total, err := h.emailOutboxService.ListByBot(cc.Ctx, cc.BotID, pageSize, int32(page*pageSize)) //nolint:gosec // offset is a small, bounded page index
 			if err != nil {
-				return "", err
+				return nil, err
 			}
-			if len(items) == 0 {
-				return "Outbox is empty.", nil
+			// A page past the end (stale Next button, or a hand-typed
+			// "--page 999") fetches an empty slice while total>0, which would
+			// render an empty body under "Showing 0 of N". Clamp to the last
+			// page and refetch so the user lands on real data.
+			if total > 0 && page > 0 && page*pageSize >= int(total) {
+				page = (int(total) - 1) / pageSize
+				items, total, err = h.emailOutboxService.ListByBot(cc.Ctx, cc.BotID, pageSize, int32(page*pageSize)) //nolint:gosec // offset is a small, bounded page index
+				if err != nil {
+					return nil, err
+				}
 			}
-			records := make([][]kv, 0, len(items))
+			if total == 0 {
+				return WithButtons(
+					&Result{Text: cc.T("cmd.email.outboxEmpty")},
+					ListItem{Label: cc.T("cmd.email.section.providers"), Action: &ItemAction{Resource: "email", Action: "providers"}},
+					ListItem{Label: cc.T("cmd.email.section.bindings"), Action: &ItemAction{Resource: "email", Action: "bindings"}},
+				), nil
+			}
+			records := make([]listRecord, 0, len(items))
 			for _, item := range items {
 				to := strings.Join(item.To, ", ")
-				records = append(records, []kv{
-					{"Subject", truncate(item.Subject, 40)},
-					{"To", truncate(to, 40)},
-					{"Status", item.Status},
-					{"Sent", item.SentAt.Format("01-02 15:04")},
-				})
+				// A failed send is the most actionable row — surface its reason.
+				note := ""
+				if item.Error != "" {
+					note = truncate(item.Error, 80)
+				}
+				// "Sent" is the expected outcome; flag only failures, like heartbeat.
+				fields := []kv{{cc.T("cmd.email.fieldSubject"), truncate(item.Subject, 40)}}
+				if st := strings.ToLower(strings.TrimSpace(item.Status)); st != "sent" && !isSuccessStatus(item.Status) {
+					fields = append(fields, kv{cc.T("cmd.common.fieldStatus"), humanizeStatusT(cc, item.Status)})
+				}
+				fields = append(fields, kv{cc.T("cmd.email.fieldTo"), truncate(to, 40)}, kv{cc.T("cmd.email.fieldSent"), humanizeTimeT(cc, item.SentAt)})
+				records = append(records, listRecord{fields: fields, note: note})
 			}
-			return formatLimitedItems(records, 10, "Use the Web UI for older outbox entries."), nil
+			result := buildPagedListResult(cc.T("cmd.email.outboxTitle"), "email", "outbox", nil, records, page, pageSize, int(total), "", cc.L)
+			return WithExtraActions(result,
+				ListItem{Label: cc.T("cmd.email.section.providers"), Action: &ItemAction{Resource: "email", Action: "providers"}},
+				ListItem{Label: cc.T("cmd.email.section.bindings"), Action: &ItemAction{Resource: "email", Action: "bindings"}},
+			), nil
 		},
 	})
 	return g
 }
 
-func buildPermString(read, write, del bool) string {
+func buildPermString(cc CommandContext, read, write, del bool) string {
 	var parts []string
 	if read {
-		parts = append(parts, "read")
+		parts = append(parts, cc.T("cmd.email.permRead"))
 	}
 	if write {
-		parts = append(parts, "write")
+		parts = append(parts, cc.T("cmd.email.permWrite"))
 	}
 	if del {
-		parts = append(parts, "delete")
+		parts = append(parts, cc.T("cmd.email.permDelete"))
 	}
 	if len(parts) == 0 {
-		return "none"
+		return cc.T("cmd.common.none")
 	}
 	return strings.Join(parts, ", ")
 }

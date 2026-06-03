@@ -20,6 +20,8 @@ import (
 
 	"github.com/memohai/memoh/internal/channel"
 	"github.com/memohai/memoh/internal/channel/common"
+	"github.com/memohai/memoh/internal/command"
+	"github.com/memohai/memoh/internal/i18n"
 	"github.com/memohai/memoh/internal/media"
 	"github.com/memohai/memoh/internal/textutil"
 )
@@ -56,6 +58,10 @@ type TelegramAdapter struct {
 	seenUpdatesMu sync.Mutex
 	seenUpdates   map[string]time.Time
 }
+
+// TelegramAdapter edits and deletes messages in place for interactive
+// pagination/selection (channel.MessageEditor).
+var _ channel.MessageEditor = (*TelegramAdapter)(nil)
 
 // NewTelegramAdapter creates a TelegramAdapter with the given logger.
 func NewTelegramAdapter(log *slog.Logger) *TelegramAdapter {
@@ -185,6 +191,8 @@ func (*TelegramAdapter) Descriptor() channel.Descriptor {
 			Media:          true,
 			Streaming:      true,
 			BlockStreaming: true,
+			Edit:           true,
+			Unsend:         true,
 		},
 		ConfigSchema: channel.ConfigSchema{
 			Version: 1,
@@ -260,6 +268,30 @@ func (*TelegramAdapter) BuildUserConfig(identity channel.Identity) map[string]an
 }
 
 // Connect starts long-polling for Telegram updates and forwards messages to the handler.
+// registerCommandMenu publishes the curated slash-command list to Telegram via
+// setMyCommands, so the bot's "/" menu is populated automatically (no per-bot
+// setup). Best-effort: errors are logged, never fatal.
+func (a *TelegramAdapter) registerCommandMenu(bot *tgbotapi.BotAPI, configID string) {
+	// The native command menu is registered once per connection, before any
+	// per-bot command-UI locale is available at this transport layer, so it is
+	// rendered in the server default locale. TODO: thread the bot's
+	// command_ui_language here to localize the native "/" menu per bot.
+	menu := command.MenuCommands(i18n.New(""))
+	cmds := make([]tgbotapi.BotCommand, 0, len(menu))
+	for _, m := range menu {
+		cmds = append(cmds, tgbotapi.BotCommand{Command: m.Command, Description: m.Description})
+	}
+	if _, err := bot.Request(tgbotapi.NewSetMyCommands(cmds...)); err != nil {
+		if a.logger != nil {
+			a.logger.Warn("register command menu failed", slog.String("config_id", configID), slog.Any("error", err))
+		}
+		return
+	}
+	if a.logger != nil {
+		a.logger.Info("registered command menu", slog.String("config_id", configID), slog.Int("count", len(cmds)))
+	}
+}
+
 func (a *TelegramAdapter) Connect(ctx context.Context, cfg channel.ChannelConfig, handler channel.InboundHandler) (channel.Connection, error) {
 	if a.logger != nil {
 		a.logger.Info("start", slog.String("config_id", cfg.ID))
@@ -278,6 +310,10 @@ func (a *TelegramAdapter) Connect(ctx context.Context, cfg channel.ChannelConfig
 		}
 		return nil, err
 	}
+	// Advertise the slash-command menu so users discover and tap commands from
+	// Telegram's native "/" menu without any per-bot configuration. Non-blocking
+	// and best-effort — a failure here must not stop the bot from connecting.
+	go a.registerCommandMenu(bot, cfg.ID)
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = 30
 	updates := bot.GetUpdatesChan(updateConfig)
@@ -383,11 +419,7 @@ func (a *TelegramAdapter) Connect(ctx context.Context, cfg channel.ChannelConfig
 					continue
 				}
 				if update.CallbackQuery != nil {
-					if msg, ok := a.buildTelegramCallbackInboundMessage(cfg, update); ok {
-						_, _ = bot.Request(tgbotapi.NewCallback(update.CallbackQuery.ID, "OK"))
-						_ = clearTelegramCallbackButtons(bot, update.CallbackQuery)
-						a.dispatchInbound(connCtx, cfg, handler, msg)
-					}
+					a.handleTelegramCallback(connCtx, cfg, handler, bot, update)
 					continue
 				}
 				if update.Message == nil {
@@ -475,24 +507,85 @@ func (a *TelegramAdapter) buildTelegramInboundMessage(bot *tgbotapi.BotAPI, cfg 
 	})
 }
 
+// handleTelegramCallback acknowledges and routes an inline-keyboard callback.
+// Interactive callbacks (namespace "m~") re-render the originating message in
+// place: pagination/selection re-dispatch a synthetic command, dismiss strips
+// the keyboard, and the page-indicator noop is ignored. Legacy approval
+// callbacks keep their prior behavior (clear buttons, then dispatch).
+func (a *TelegramAdapter) handleTelegramCallback(ctx context.Context, cfg channel.ChannelConfig, handler channel.InboundHandler, bot *tgbotapi.BotAPI, update tgbotapi.Update) {
+	cb := update.CallbackQuery
+	if cb == nil {
+		return
+	}
+	// Acknowledge immediately so the client stops showing a spinner.
+	_, _ = bot.Request(tgbotapi.NewCallback(cb.ID, "OK"))
+
+	if command.IsInteractiveCallback(strings.TrimSpace(cb.Data)) {
+		parsed, ok := command.DecodeCallback(strings.TrimSpace(cb.Data))
+		if !ok {
+			return
+		}
+		switch {
+		case parsed.IsNoop():
+			return
+		case parsed.IsDismiss():
+			// Close: collapse the card to its title line and drop the keyboard,
+			// rather than deleting the whole message — the user keeps a short
+			// breadcrumb of what was opened instead of having it vanish.
+			if cb.Message != nil && cb.Message.Chat != nil {
+				if title := collapseToTitle(cb.Message.Text); title != "" {
+					_ = editTelegramMessageText(bot, cb.Message.Chat.ID, cb.Message.MessageID, title, "")
+				}
+			}
+			return
+		default:
+			// Pagination/selection: re-dispatch a synthetic command that
+			// re-renders the message in place. Do NOT clear the keyboard.
+			if msg, ok := a.buildTelegramCallbackInboundMessage(cfg, update); ok {
+				a.dispatchInbound(ctx, cfg, handler, msg)
+			}
+			return
+		}
+	}
+
+	// Legacy tool-approval callbacks.
+	if msg, ok := a.buildTelegramCallbackInboundMessage(cfg, update); ok {
+		_ = clearTelegramCallbackButtons(bot, cb)
+		a.dispatchInbound(ctx, cfg, handler, msg)
+	}
+}
+
 func (a *TelegramAdapter) buildTelegramCallbackInboundMessage(cfg channel.ChannelConfig, update tgbotapi.Update) (channel.InboundMessage, bool) {
 	cb := update.CallbackQuery
 	if cb == nil || cb.Message == nil {
 		return channel.InboundMessage{}, false
 	}
-	action, approvalID, ok := parseTelegramApprovalCallback(cb.Data)
-	if !ok {
+	extraMeta := map[string]any{
+		"update_id":         update.UpdateID,
+		"callback_query_id": cb.ID,
+	}
+	var text string
+	if action, approvalID, ok := parseTelegramApprovalCallback(cb.Data); ok {
+		text = "/" + action + " " + approvalID
+	} else if parsed, ok := command.DecodeCallback(strings.TrimSpace(cb.Data)); ok {
+		syntheticCmd := parsed.SyntheticCommand()
+		if syntheticCmd == "" {
+			return channel.InboundMessage{}, false
+		}
+		text = syntheticCmd
+		// Re-render the existing message in place rather than posting a new one.
+		extraMeta["edit_message_id"] = strconv.Itoa(cb.Message.MessageID)
+		// A tap on the bot's own keyboard is by definition directed at the bot,
+		// so the command path runs even in group chats.
+		extraMeta["is_mentioned"] = true
+	} else {
 		return channel.InboundMessage{}, false
 	}
-	text := "/" + action + " " + approvalID
 	raw := cb.Message
 	raw.Text = text
 	raw.From = cb.From
 	replyID := strconv.Itoa(cb.Message.MessageID)
-	msg, ok := a.toInboundTelegramMessage(nil, cfg, raw, text, nil, map[string]any{
-		"update_id":         update.UpdateID,
-		"callback_query_id": cb.ID,
-	})
+	msg, ok := a.toInboundTelegramMessage(nil, cfg, raw, text, nil, extraMeta)
 	if !ok {
 		return channel.InboundMessage{}, false
 	}
@@ -517,10 +610,14 @@ func clearTelegramCallbackButtons(bot *tgbotapi.BotAPI, cb *tgbotapi.CallbackQue
 	if bot == nil || cb == nil || cb.Message == nil || cb.Message.Chat == nil {
 		return nil
 	}
+	// Telegram requires inline_keyboard to be an array. An empty
+	// InlineKeyboardMarkup{} marshals its nil slice to {"inline_keyboard":null}
+	// and is rejected, leaving the keyboard in place; a non-nil empty rows slice
+	// marshals to {"inline_keyboard":[]}, which removes the keyboard.
 	edit := tgbotapi.NewEditMessageReplyMarkup(
 		cb.Message.Chat.ID,
 		cb.Message.MessageID,
-		tgbotapi.InlineKeyboardMarkup{},
+		tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{}},
 	)
 	_, err := bot.Request(edit)
 	return err
@@ -762,6 +859,60 @@ func (a *TelegramAdapter) Send(ctx context.Context, cfg channel.ChannelConfig, m
 	return sendTelegramText(bot, to, text, replyTo, parseMode)
 }
 
+// Update edits an already-sent message in place (text + inline keyboard),
+// satisfying channel.MessageEditor. It powers interactive pagination/selection:
+// passing empty Actions removes the keyboard. Channel-username targets are not
+// supported (edits require a numeric chat ID).
+func (a *TelegramAdapter) Update(_ context.Context, cfg channel.ChannelConfig, target string, messageID string, msg channel.PreparedMessage) error {
+	telegramCfg, err := parseConfig(cfg.Credentials)
+	if err != nil {
+		return err
+	}
+	bot, err := a.getOrCreateBot(telegramCfg, cfg.ID)
+	if err != nil {
+		return err
+	}
+	chatID, channelUsername, err := parseTelegramTarget(strings.TrimSpace(target))
+	if err != nil {
+		return err
+	}
+	if channelUsername != "" {
+		return errors.New("telegram: editing channel-username targets is not supported")
+	}
+	mid, err := strconv.Atoi(strings.TrimSpace(messageID))
+	if err != nil {
+		return fmt.Errorf("telegram: invalid message id %q: %w", messageID, err)
+	}
+	text := strings.TrimSpace(msg.Message.PlainText())
+	text, parseMode := formatTelegramOutput(text, msg.Message.Format)
+	return editTelegramMessageTextWithActions(bot, chatID, mid, text, parseMode, msg.Message.Actions)
+}
+
+// Unsend deletes a previously-sent message, satisfying channel.MessageEditor.
+func (a *TelegramAdapter) Unsend(_ context.Context, cfg channel.ChannelConfig, target string, messageID string) error {
+	telegramCfg, err := parseConfig(cfg.Credentials)
+	if err != nil {
+		return err
+	}
+	bot, err := a.getOrCreateBot(telegramCfg, cfg.ID)
+	if err != nil {
+		return err
+	}
+	chatID, channelUsername, err := parseTelegramTarget(strings.TrimSpace(target))
+	if err != nil {
+		return err
+	}
+	if channelUsername != "" {
+		return errors.New("telegram: deleting channel-username targets is not supported")
+	}
+	mid, err := strconv.Atoi(strings.TrimSpace(messageID))
+	if err != nil {
+		return fmt.Errorf("telegram: invalid message id %q: %w", messageID, err)
+	}
+	_, err = bot.Request(tgbotapi.NewDeleteMessage(chatID, mid))
+	return err
+}
+
 // OpenStream opens a Telegram streaming session.
 // For private chats, uses sendMessageDraft to stream partial content with smooth
 // animation, then sends a final permanent message via sendMessage.
@@ -958,9 +1109,35 @@ func sendTelegramTextWithActionsReturnMessage(bot *tgbotapi.BotAPI, target strin
 
 var sendEditForTest func(bot *tgbotapi.BotAPI, edit tgbotapi.EditMessageTextConfig) error
 
-// editTelegramMessageText sends an edit request. It handles "message is not modified"
-// silently but returns 429 and other errors to the caller for higher-level retry decisions.
+// collapseToTitle returns the first non-empty line of a message, used to
+// shrink an interactive card to a short breadcrumb when the user taps Close.
+// Returns empty when every line is blank — caller should skip the edit so
+// callers don't have to choose a localized "(closed)" placeholder string with
+// no localizer available at the callback boundary.
+func collapseToTitle(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 func editTelegramMessageText(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string, parseMode string) error {
+	err := rawEditTelegramMessageText(bot, chatID, messageID, text, parseMode)
+	if err != nil && (isTelegramMessageNotModified(err) || isTelegramEditUnrecoverable(err)) {
+		return nil
+	}
+	return err
+}
+
+// rawEditTelegramMessageText performs the edit and returns the raw API error,
+// swallowing nothing. editTelegramMessageText wraps it with the
+// not-modified/unrecoverable swallow used by interactive edits (where a tap on a
+// deleted card should be a quiet no-op, not a burned retry). The streaming final
+// path uses the raw form instead so it can SEE an unrecoverable error and recover
+// the answer (post it as a new message) rather than dropping it silently.
+func rawEditTelegramMessageText(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string, parseMode string) error {
 	text = truncateTelegramText(sanitizeTelegramText(text))
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ParseMode = parseMode
@@ -968,36 +1145,49 @@ func editTelegramMessageText(bot *tgbotapi.BotAPI, chatID int64, messageID int, 
 	if send == nil {
 		send = func(b *tgbotapi.BotAPI, e tgbotapi.EditMessageTextConfig) error { _, err := b.Send(e); return err }
 	}
-	err := send(bot, edit)
-	if err != nil && isTelegramMessageNotModified(err) {
-		return nil
-	}
-	return err
+	return send(bot, edit)
 }
 
 func editTelegramMessageTextWithActions(bot *tgbotapi.BotAPI, chatID int64, messageID int, text string, parseMode string, actions []channel.Action) error {
+	// With no actions, omit reply_markup entirely. NewEditMessageTextAndMarkup
+	// with an empty keyboard marshals reply_markup to {"inline_keyboard":null},
+	// which Telegram rejects (it must be an array) — the edit then silently fails,
+	// so a plain-text confirmation (e.g. after picking a model) never lands and the
+	// stale keyboard stays. editTelegramMessageText sends no reply_markup, which
+	// both updates the text AND removes the old keyboard.
+	if len(actions) == 0 {
+		return editTelegramMessageText(bot, chatID, messageID, text, parseMode)
+	}
 	text = truncateTelegramText(sanitizeTelegramText(text))
 	markup := telegramInlineKeyboard(actions)
 	edit := tgbotapi.NewEditMessageTextAndMarkup(chatID, messageID, text, markup)
 	edit.ParseMode = parseMode
 	_, err := bot.Send(edit)
-	if err != nil && isTelegramMessageNotModified(err) {
+	if err != nil && (isTelegramMessageNotModified(err) || isTelegramEditUnrecoverable(err)) {
 		return nil
 	}
 	return err
 }
 
 func telegramInlineKeyboard(actions []channel.Action) tgbotapi.InlineKeyboardMarkup {
-	keyboard := make([]tgbotapi.InlineKeyboardButton, 0, len(actions))
+	rowOrder := make([]int, 0, len(actions))
+	rowButtons := make(map[int][]tgbotapi.InlineKeyboardButton, len(actions))
 	for _, action := range actions {
 		label := strings.TrimSpace(action.Label)
 		value := strings.TrimSpace(action.Value)
 		if label == "" || value == "" {
 			continue
 		}
-		keyboard = append(keyboard, tgbotapi.NewInlineKeyboardButtonData(label, value))
+		if _, ok := rowButtons[action.Row]; !ok {
+			rowOrder = append(rowOrder, action.Row)
+		}
+		rowButtons[action.Row] = append(rowButtons[action.Row], tgbotapi.NewInlineKeyboardButtonData(label, value))
 	}
-	return tgbotapi.NewInlineKeyboardMarkup(keyboard)
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(rowOrder))
+	for _, r := range rowOrder {
+		rows = append(rows, rowButtons[r])
+	}
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
 
 var sendDraftForTest func(bot *tgbotapi.BotAPI, chatID int64, draftID int, text string, parseMode string) error
@@ -1028,6 +1218,30 @@ func isTelegramMessageNotModified(err error) bool {
 	var apiErr tgbotapi.Error
 	if errors.As(err, &apiErr) {
 		return apiErr.Code == 400 && strings.Contains(apiErr.Message, "message is not modified")
+	}
+	return false
+}
+
+// isTelegramEditUnrecoverable reports whether an edit failed because the target
+// message is gone or can never be edited — retrying cannot help. The
+// interactive edit path (pagination/selection via Update) flows through the
+// generic outbound retry loop, which would otherwise burn RetryMax attempts
+// (each with a linear backoff sleep) on a message the user already deleted or
+// that aged past Telegram's edit window. Treated as terminal — the edit is a
+// no-op — exactly like "message is not modified".
+func isTelegramEditUnrecoverable(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr tgbotapi.Error
+	if errors.As(err, &apiErr) {
+		if apiErr.Code != 400 {
+			return false
+		}
+		m := strings.ToLower(apiErr.Message)
+		return strings.Contains(m, "message to edit not found") ||
+			strings.Contains(m, "message can't be edited") ||
+			strings.Contains(m, "message_id_invalid")
 	}
 	return false
 }

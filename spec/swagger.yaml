@@ -1134,6 +1134,13 @@ definitions:
     properties:
       label:
         type: string
+      row:
+        description: |-
+          Row groups buttons into keyboard rows for renderers that support grids
+          (e.g. Telegram inline keyboards). Buttons sharing a Row render together;
+          rows appear in ascending first-seen order. Renderers without grid support
+          ignore this field. 0 is the default (single row, prior behavior).
+        type: integer
       type:
         type: string
       url:
@@ -3443,6 +3450,8 @@ definitions:
         type: string
       chat_model_id:
         type: string
+      command_ui_language:
+        type: string
       compaction_enabled:
         type: boolean
       compaction_model_id:
@@ -3537,6 +3546,8 @@ definitions:
       acl_default_effect:
         type: string
       chat_model_id:
+        type: string
+      command_ui_language:
         type: string
       compaction_enabled:
         type: boolean

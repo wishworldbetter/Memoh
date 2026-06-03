@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode"
 
 	"github.com/memohai/memoh/internal/bots"
 	"github.com/memohai/memoh/internal/compaction"
 	dbstore "github.com/memohai/memoh/internal/db/store"
 	emailpkg "github.com/memohai/memoh/internal/email"
 	"github.com/memohai/memoh/internal/heartbeat"
+	"github.com/memohai/memoh/internal/i18n"
 	"github.com/memohai/memoh/internal/mcp"
 	memprovider "github.com/memohai/memoh/internal/memory/adapters"
 	"github.com/memohai/memoh/internal/models"
@@ -78,6 +80,9 @@ type ExecuteInput struct {
 	ThreadID          string
 	RouteID           string
 	SessionID         string
+	// Locale optionally pins the command-UI locale. When empty, ExecuteResult
+	// resolves it from the bot's command_ui_language setting (auto → en).
+	Locale string
 }
 
 // NewHandler creates a Handler with all required services.
@@ -130,15 +135,63 @@ func (h *Handler) SetCompactionService(s *compaction.Service, q dbstore.Queries)
 	h.sqlcQueries = q
 }
 
-// topLevelCommands are standalone commands (no sub-actions) that are
-// recognised by IsCommand and listed in /help. They are handled outside
-// the regular resource-group dispatch (e.g. in the channel inbound
-// processor which has the required routing context).
-var topLevelCommands = map[string]string{
-	"new":     "Start a new conversation (resets session context)",
-	"stop":    "Stop the current generation",
-	"approve": "Approve the latest or specified pending tool call",
-	"reject":  "Reject the latest or specified pending tool call",
+// CurrentContext resolves the bot's current model/heartbeat/reasoning state for
+// enriching command output (e.g. the /new confirmation). It is a read-only view
+// over existing bot settings and makes no changes.
+func (h *Handler) CurrentContext(ctx context.Context, botID string) (CurrentContext, error) {
+	loc := i18n.New(h.ResolveLocale(ctx, botID))
+	cc := CommandContext{Ctx: ctx, BotID: strings.TrimSpace(botID), Locale: loc.Locale(), L: loc}
+	s, err := h.getBotSettings(cc)
+	if err != nil {
+		return CurrentContext{}, err
+	}
+	return CurrentContext{
+		ChatModel:        h.resolveModelName(cc, s.ChatModelID),
+		HeartbeatModel:   h.resolveModelName(cc, s.HeartbeatModelID),
+		ReasoningEnabled: s.ReasoningEnabled,
+		ReasoningEffort:  s.ReasoningEffort,
+		ContextWindow:    h.resolveContextWindow(cc),
+	}, nil
+}
+
+// topLevelCommands are standalone commands (no sub-actions) that IsCommand
+// recognises and that are handled outside the regular resource-group dispatch
+// (the channel inbound processor has the routing context they need). Only
+// /help, /new, /stop are advertised in /help output — /approve and /reject are
+// internal tool-approval protocol verbs that users discover via the inline
+// approval prompt, not via the help listing.
+//
+// The map carries no per-key data — membership is the only fact callers need.
+// Localized descriptions for the advertised entries live under `cmd.help.top.*`
+// in the i18n catalog.
+var topLevelCommands = map[string]struct{}{
+	"new":     {},
+	"stop":    {},
+	"approve": {},
+	"reject":  {},
+}
+
+// resourceAliases maps alternate spellings to the canonical command resource so
+// that common variants all resolve (e.g. /setting, /reason, /effort, /think,
+// /commands). Keys and values are lowercase (Parse lowercases the resource).
+var resourceAliases = map[string]string{
+	"setting":   "settings",
+	"commands":  "help",
+	"cmds":      "help",
+	"model":     "model",
+	"models":    "model",
+	"reason":    "reasoning",
+	"reasoning": "reasoning",
+	"effort":    "reasoning",
+	"think":     "reasoning",
+}
+
+// canonicalResource resolves a parsed resource through resourceAliases.
+func canonicalResource(resource string) string {
+	if c, ok := resourceAliases[resource]; ok {
+		return c
+	}
+	return resource
 }
 
 // IsCommand reports whether the text contains a slash command.
@@ -153,14 +206,82 @@ func (h *Handler) IsCommand(text string) bool {
 	if err != nil {
 		return false
 	}
-	if parsed.Resource == "help" {
+	resource := canonicalResource(parsed.Resource)
+	if resource == "help" {
 		return true
 	}
-	if _, ok := topLevelCommands[parsed.Resource]; ok {
+	if _, ok := topLevelCommands[resource]; ok {
 		return true
 	}
-	_, ok := h.registry.groups[parsed.Resource]
+	_, ok := h.registry.groups[resource]
 	return ok
+}
+
+// IsCommandShaped reports whether text looks like a slash command (a leading
+// slash followed by a command-name token), whether or not it is registered. It
+// lets the channel layer reply with a helpful "unknown command" hint instead of
+// forwarding a mistyped command to the model. Paths/URLs (e.g. "/a/b") are
+// rejected so they are not mistaken for commands.
+func (*Handler) IsCommandShaped(text string) bool {
+	cmdText := ExtractCommandText(text)
+	if cmdText == "" || len(cmdText) < 2 {
+		return false
+	}
+	parsed, err := Parse(cmdText)
+	if err != nil {
+		return false
+	}
+	return isCommandName(parsed.Resource)
+}
+
+// isCommandName reports whether r is a plausible command name: a letter followed
+// by letters/digits/_/-, at most 32 chars. This excludes paths ("path/to/file"),
+// which contain a slash, and other non-command slashes.
+func isCommandName(r string) bool {
+	if r == "" || len(r) > 32 {
+		return false
+	}
+	for i := 0; i < len(r); i++ {
+		c := r[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z':
+		case (c >= '0' && c <= '9' || c == '_' || c == '-') && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// UnknownCommandMessage is the reply for slash-command-shaped input that is not a
+// known command. It points the user at /commands and offers the no-slash escape.
+func UnknownCommandMessage(t *i18n.Localizer, text string) string {
+	parsed, _ := Parse(ExtractCommandText(text))
+	return t.T("cmd.error.unknownCommand", map[string]any{
+		"command": CmdRef(parsed.Resource),
+		"help":    CmdRef("commands"),
+	})
+}
+
+// ResolveLocale resolves the command-UI locale for a bot from its
+// command_ui_language setting (auto/unknown → server default). Any settings I/O
+// error falls back to the default locale, so command rendering never blocks on
+// it. Exported so the channel layer can localize its own renderer chrome and
+// operational-failure messages with the same locale.
+//
+// Uses the scoped GetCommandUILanguage (single DB query) rather than GetBot
+// (which also fetches the ACL default-effect) — the locale is resolved per
+// command and per interactive callback tap, so single-query matters for
+// paginated lists where users tap Prev/Next repeatedly.
+func (h *Handler) ResolveLocale(ctx context.Context, botID string) string {
+	if h == nil || h.settingsService == nil || strings.TrimSpace(botID) == "" {
+		return i18n.DefaultLocale
+	}
+	lang, err := h.settingsService.GetCommandUILanguage(ctx, strings.TrimSpace(botID))
+	if err != nil {
+		return i18n.DefaultLocale
+	}
+	return i18n.Resolve(lang)
 }
 
 // Execute parses and runs a slash command, returning the text reply.
@@ -172,15 +293,45 @@ func (h *Handler) Execute(ctx context.Context, botID, channelIdentityID, text st
 	})
 }
 
-// ExecuteWithInput parses and runs a slash command with channel/session context.
+// ExecuteWithInput parses and runs a slash command with channel/session
+// context, returning the plain-text reply. It delegates to ExecuteResult and
+// flattens the structured result to its text form.
 func (h *Handler) ExecuteWithInput(ctx context.Context, input ExecuteInput) (string, error) {
+	res, err := h.ExecuteResult(ctx, input)
+	if err != nil {
+		return "", err
+	}
+	if res == nil {
+		return "", nil
+	}
+	return res.Text, nil
+}
+
+// ExecuteResult parses and runs a slash command, returning a neutral Result.
+// The Result always carries complete Text; Interactive is set only by commands
+// that opt into rich rendering via SubCommand.ResultHandler.
+func (h *Handler) ExecuteResult(ctx context.Context, input ExecuteInput) (res *Result, err error) {
+	// Resolve the command-UI locale once and stamp it onto whatever Result we
+	// return, so the channel renderer can localize its own chrome to match.
+	localeStr := strings.TrimSpace(input.Locale)
+	if localeStr == "" {
+		localeStr = h.ResolveLocale(ctx, input.BotID)
+	}
+	loc := i18n.New(localeStr)
+	localeStr = loc.Locale()
+	defer func() {
+		if res != nil && res.Locale == "" {
+			res.Locale = localeStr
+		}
+	}()
+
 	cmdText := ExtractCommandText(input.Text)
 	if cmdText == "" {
-		return h.registry.GlobalHelp(), nil
+		return &Result{Text: h.registry.GlobalHelp(loc)}, nil
 	}
 	parsed, err := Parse(cmdText)
 	if err != nil {
-		return h.registry.GlobalHelp(), nil
+		return &Result{Text: h.registry.GlobalHelp(loc)}, nil
 	}
 
 	// Resolve the user's role in this bot.
@@ -203,6 +354,13 @@ func (h *Handler) ExecuteWithInput(ctx context.Context, input ExecuteInput) (str
 	}
 	writeAccess := role == "owner" || allowsUnboundWriteCommands(input)
 
+	resource := canonicalResource(parsed.Resource)
+	// /language <lang> shorthand → /language set <lang>. Must run BEFORE cc is
+	// built: cc.Args is frozen from parsed.Args below, so rewriting parsed.Args
+	// after construction would leave the `language set` handler reading an empty
+	// arg slice and emitting usage text instead of switching the language.
+	normalizeLanguageShorthand(resource, &parsed)
+
 	cc := CommandContext{
 		Ctx:               ctx,
 		BotID:             input.BotID,
@@ -217,53 +375,168 @@ func (h *Handler) ExecuteWithInput(ctx context.Context, input ExecuteInput) (str
 		ThreadID:          strings.TrimSpace(input.ThreadID),
 		RouteID:           strings.TrimSpace(input.RouteID),
 		SessionID:         strings.TrimSpace(input.SessionID),
+		Page:              parsed.Page,
+		Prov:              parsed.Prov,
+		SelectID:          parsed.SelectID,
+		Range:             parsed.Range,
+		Locale:            localeStr,
+		L:                 loc,
 	}
 
-	// /help
-	if parsed.Resource == "help" {
-		if parsed.Action == "" {
-			return h.registry.GlobalHelp(), nil
+	// /help (and its alias /commands)
+	if resource == "help" {
+		switch {
+		case parsed.Action == "":
+			return &Result{Text: h.registry.GlobalHelp(cc.L)}, nil
+		case len(parsed.Args) == 0:
+			return h.registry.GroupHelpResult(parsed.Action, cc.L), nil
+		default:
+			return &Result{Text: h.registry.ActionHelp(parsed.Action, parsed.Args[0], cc.L)}, nil
 		}
-		if len(parsed.Args) == 0 {
-			return h.registry.GroupHelp(parsed.Action), nil
-		}
-		return h.registry.ActionHelp(parsed.Action, parsed.Args[0]), nil
 	}
 
 	// Top-level commands (e.g. /new) are handled by the channel inbound
 	// processor which has the required routing context. If Execute is
 	// called for one of these, return a short usage hint.
-	if desc, ok := topLevelCommands[parsed.Resource]; ok {
-		return fmt.Sprintf("/%s - %s", parsed.Resource, desc), nil
+	if _, ok := topLevelCommands[resource]; ok {
+		return &Result{Text: fmt.Sprintf("/%s — %s", resource, cc.T("cmd.help.top."+resource))}, nil
 	}
 
-	group, ok := h.registry.groups[parsed.Resource]
+	group, ok := h.registry.groups[resource]
 	if !ok {
-		return fmt.Sprintf("Unknown command: /%s\n\n%s", parsed.Resource, h.registry.GlobalHelp()), nil
+		return &Result{Text: cc.T("cmd.error.unknownCommandShort", map[string]any{"command": CmdRef(parsed.Resource), "help": CmdRef("help")})}, nil
 	}
 
 	if parsed.Action == "" {
 		if group.DefaultAction != "" {
 			parsed.Action = group.DefaultAction
 		} else {
-			return group.Usage(), nil
+			return &Result{Text: group.Usage(cc.L)}, nil
 		}
 	}
 
 	sub, ok := group.commands[parsed.Action]
 	if !ok {
-		return fmt.Sprintf("Unknown action \"%s\" for /%s.\n\n%s", parsed.Action, parsed.Resource, group.Usage()), nil
+		return &Result{Text: cc.T("cmd.error.unknownAction", map[string]any{"action": MdCode(parsed.Action), "command": CmdRef(parsed.Resource), "help": CmdRef("help " + parsed.Resource)})}, nil
 	}
 
 	if sub.IsWrite && !writeAccess {
-		return "Permission denied: only the bot owner can execute this command.", nil
+		return &Result{Text: cc.T("cmd.error.ownerOnly", map[string]any{"command": CmdRef(parsed.Resource)})}, nil
 	}
 
-	result, handlerErr := safeExecute(sub.Handler, cc)
-	if handlerErr != nil {
-		return fmt.Sprintf("Error: %s", handlerErr.Error()), nil
+	if sub.ResultHandler != nil {
+		res, handlerErr := safeExecuteResult(sub.ResultHandler, cc)
+		if handlerErr != nil {
+			return &Result{Text: h.friendlyCommandError(cc.L, parsed.Resource, handlerErr)}, nil
+		}
+		if res == nil {
+			res = &Result{}
+		}
+		return res, nil
 	}
-	return result, nil
+
+	text, handlerErr := safeExecute(sub.Handler, cc)
+	if handlerErr != nil {
+		return &Result{Text: h.friendlyCommandError(cc.L, parsed.Resource, handlerErr)}, nil
+	}
+	return &Result{Text: text}, nil
+}
+
+// friendlyCommandError converts a service/handler error into user-facing text.
+// Clean domain errors (e.g. `schedule "x" not found`, `model "x" is ambiguous`)
+// are surfaced sentence-cased, with a discovery pointer appended for not-found
+// cases. Errors that look like infra/transport leaks (raw Go wrap chains,
+// "dial tcp", IPs, deadlines, SQL/driver text) are replaced with a generic
+// retry line so internals never reach chat.
+func (h *Handler) friendlyCommandError(t *i18n.Localizer, resource string, err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := strings.TrimSpace(err.Error())
+	res := strings.TrimSpace(resource)
+	if msg != "" && !looksLikeInternalError(msg) {
+		out := capitalizeFirst(msg)
+		if !endsWithTerminalPunct(out) {
+			out += "."
+		}
+		if res != "" && strings.Contains(strings.ToLower(msg), "not found") {
+			out += t.T("cmd.error.runToSeeList", map[string]any{"command": CmdRef(res + " list")})
+		}
+		return out
+	}
+	// Sanitized path: keep the raw error in logs, show the user a clean retry line.
+	if h.logger != nil {
+		h.logger.Warn("command failed", slog.String("resource", res), slog.Any("error", err))
+	}
+	if res == "" {
+		return t.T("cmd.error.genericNoResource")
+	}
+	return t.T("cmd.error.generic", map[string]any{"command": CmdRef(res)})
+}
+
+// normalizeLanguageShorthand rewrites the "/language <lang>" shorthand into the
+// explicit "/language set <lang>" form so a bare value (zh/en/auto) reaches the
+// set handler's argument slice. The caller must invoke this BEFORE freezing
+// CommandContext.Args from parsed.Args — otherwise the rewritten arg never makes
+// it into the context the handler reads.
+func normalizeLanguageShorthand(resource string, parsed *ParsedCommand) {
+	if resource == "language" && parsed.Action != "" && parsed.Action != "show" && parsed.Action != "set" {
+		parsed.Args = append([]string{parsed.Action}, parsed.Args...)
+		parsed.Action = "set"
+	}
+}
+
+// looksLikeInternalError reports whether an error message carries infra/transport
+// internals that must not reach chat (Go wrap chains, network/SQL/TLS details).
+// It keys on content markers only — a length cap was removed because legitimate
+// domain messages (e.g. an ambiguous-model list of provider-qualified IDs) can
+// be long, and capping by length wrongly replaced them with a dead retry line.
+//
+// Markers are conservative. "sql:" (with colon) catches database/sql / pq
+// wrap chains without flagging model names that happen to contain "sql"
+// (e.g. "sqlcoder"). "failed to " is the canonical Go wrap idiom; legitimate
+// domain messages can also begin with it ("failed to find …"), so the
+// false-positive test in handler_test pins the trade-off and the visible
+// fallback ("please try again") is still recoverable.
+func looksLikeInternalError(msg string) bool {
+	lower := strings.ToLower(msg)
+	markers := []string{
+		"failed to ", "dial tcp", "connection refused", "context deadline",
+		"i/o timeout", "no such host", "pq:", "sql:", "x509",
+		"panic:", "goroutine", "invalid memory", "nil pointer",
+	}
+	for _, m := range markers {
+		if strings.Contains(lower, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// capitalizeFirst upper-cases the first rune of s, leaving the rest untouched.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r)
+}
+
+// endsWithTerminalPunct reports whether s already ends in sentence-final
+// punctuation (ASCII or CJK). friendlyCommandError uses it so it never tacks an
+// ASCII "." onto an already-terminated string — e.g. a zh message ending in the
+// ideographic full stop "。" would otherwise become "…。.".
+func endsWithTerminalPunct(s string) bool {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) == 0 {
+		return false
+	}
+	switch r[len(r)-1] {
+	case '.', '!', '?', '。', '！', '？', '…':
+		return true
+	}
+	return false
 }
 
 func allowsUnboundWriteCommands(input ExecuteInput) bool {
@@ -285,6 +558,16 @@ func allowsUnboundWriteCommands(input ExecuteInput) bool {
 
 // safeExecute runs a sub-command handler and recovers from panics.
 func safeExecute(fn func(CommandContext) (string, error), cc CommandContext) (result string, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("internal error: %v", r)
+		}
+	}()
+	return fn(cc)
+}
+
+// safeExecuteResult runs a structured sub-command handler and recovers from panics.
+func safeExecuteResult(fn func(CommandContext) (*Result, error), cc CommandContext) (result *Result, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("internal error: %v", r)

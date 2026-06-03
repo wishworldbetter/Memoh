@@ -152,6 +152,7 @@ CREATE TABLE IF NOT EXISTS bots (
   is_active BOOLEAN NOT NULL DEFAULT true,
   status TEXT NOT NULL DEFAULT 'ready',
   language TEXT NOT NULL DEFAULT 'auto',
+  command_ui_language TEXT NOT NULL DEFAULT 'auto',
   reasoning_enabled BOOLEAN NOT NULL DEFAULT false,
   reasoning_effort TEXT NOT NULL DEFAULT 'medium',
   chat_model_id UUID REFERENCES models(id) ON DELETE SET NULL,
@@ -182,7 +183,7 @@ CREATE TABLE IF NOT EXISTS bots (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT bots_type_check CHECK (type IN ('personal', 'public')),
   CONSTRAINT bots_status_check CHECK (status IN ('creating', 'ready', 'deleting')),
-  CONSTRAINT bots_reasoning_effort_check CHECK (reasoning_effort IN ('low', 'medium', 'high')),
+  CONSTRAINT bots_reasoning_effort_check CHECK (reasoning_effort IN ('none', 'low', 'medium', 'high', 'xhigh')),
   CONSTRAINT bots_name_format_check CHECK (name ~ '^[a-z0-9][a-z0-9-]{1,62}$')
 );
 

@@ -19,9 +19,9 @@ func (h *Handler) buildStatusGroup() *CommandGroup {
 		Usage: "show - Show current session status",
 		Handler: func(cc CommandContext) (string, error) {
 			if strings.TrimSpace(cc.SessionID) == "" {
-				return "No active session found for this conversation.", nil
+				return cc.T("cmd.session.noActive"), nil
 			}
-			return h.renderSessionStatus(cc, cc.SessionID, "current conversation")
+			return h.renderSessionStatus(cc, cc.SessionID, cc.T("cmd.status.scopeCurrent"))
 		},
 	})
 	g.Register(SubCommand{
@@ -29,7 +29,7 @@ func (h *Handler) buildStatusGroup() *CommandGroup {
 		Usage: "latest - Show the latest session status for this bot",
 		Handler: func(cc CommandContext) (string, error) {
 			if h.queries == nil {
-				return "Session info is not available.", nil
+				return cc.T("cmd.session.unavailable"), nil
 			}
 			botUUID, err := parseBotUUID(cc.BotID)
 			if err != nil {
@@ -38,11 +38,11 @@ func (h *Handler) buildStatusGroup() *CommandGroup {
 			sessionID, err := h.queries.GetLatestSessionIDByBot(cc.Ctx, botUUID)
 			if err != nil {
 				if errors.Is(err, pgx.ErrNoRows) {
-					return "No session found for this bot.", nil
+					return cc.T("cmd.session.noneForBot"), nil
 				}
 				return "", err
 			}
-			return h.renderSessionStatus(cc, sessionID.String(), "latest bot session")
+			return h.renderSessionStatus(cc, sessionID.String(), cc.T("cmd.status.scopeLatest"))
 		},
 	})
 	return g
@@ -50,7 +50,7 @@ func (h *Handler) buildStatusGroup() *CommandGroup {
 
 func (h *Handler) renderSessionStatus(cc CommandContext, sessionID string, scope string) (string, error) {
 	if h.queries == nil {
-		return "Session info is not available.", nil
+		return cc.T("cmd.session.unavailable"), nil
 	}
 	pgSessionID, err := parseCommandUUID(sessionID)
 	if err != nil {
@@ -87,33 +87,60 @@ func (h *Handler) renderSessionStatus(cc CommandContext, sessionID string, scope
 		contextUsage = contextUsage + " / " + contextWindow
 	}
 
-	pairs := []kv{
-		{"Scope", scope},
-		{"Session ID", sessionID},
-		{"Messages", strconv.FormatInt(msgCount, 10)},
-		{"Context", contextUsage},
-		{"Cache Hit Rate", fmt.Sprintf("%.1f%%", cacheHitRate)},
-		{"Cache Read", formatTokens(cacheRow.CacheReadTokens)},
+	pairs := make([]kv, 0, 6)
+	// Lead with the model — the single most load-bearing "where am I" fact.
+	if s, err := h.getBotSettings(cc); err == nil {
+		if m := h.resolveModelName(cc, s.ChatModelID); m != "" && m != cc.T("cmd.common.none") {
+			pairs = append(pairs, kv{cc.T("cmd.status.fieldModel"), m})
+		}
+	}
+	pairs = append(pairs,
+		kv{cc.T("cmd.status.fieldMessages"), strconv.FormatInt(msgCount, 10)},
+		kv{cc.T("cmd.status.fieldContext"), contextUsage},
+	)
+	// On a brand-new session, cache stats are forced to 0 and read as a
+	// measured-bad result rather than "no data" — show them only once there is
+	// input to measure.
+	if cacheRow.TotalInputTokens > 0 {
+		pairs = append(pairs,
+			kv{cc.T("cmd.status.fieldCacheHitRate"), fmt.Sprintf("%.1f%%", cacheHitRate)},
+			kv{cc.T("cmd.status.fieldCacheRead"), formatTokens(cacheRow.CacheReadTokens)},
+		)
 	}
 	if len(skills) > 0 {
-		pairs = append(pairs, kv{"Skills", strings.Join(skills, ", ")})
+		pairs = append(pairs, kv{cc.T("cmd.status.fieldSkills"), strings.Join(skills, ", ")})
 	}
-	return formatKV(pairs), nil
+	title := cc.T("cmd.status.title")
+	if s := strings.TrimSpace(scope); s != "" {
+		title += " — " + s
+	}
+	return formatKVTitled(title, pairs), nil
 }
 
 func (h *Handler) resolveContextWindow(cc CommandContext) string {
-	if h.settingsService == nil || h.modelsService == nil {
+	w := h.resolveContextWindowTokens(cc)
+	if w == 0 {
 		return ""
+	}
+	return formatTokens(w)
+}
+
+// resolveContextWindowTokens returns the chat model's context window in tokens
+// (0 if unknown), the raw value behind resolveContextWindow — used by /context
+// to compute a percentage and bar.
+func (h *Handler) resolveContextWindowTokens(cc CommandContext) int64 {
+	if h.settingsService == nil || h.modelsService == nil {
+		return 0
 	}
 	s, err := h.settingsService.GetBot(cc.Ctx, cc.BotID)
 	if err != nil || s.ChatModelID == "" {
-		return ""
+		return 0
 	}
 	m, err := h.modelsService.GetByID(cc.Ctx, s.ChatModelID)
 	if err != nil || m.Config.ContextWindow == nil {
-		return ""
+		return 0
 	}
-	return formatTokens(int64(*m.Config.ContextWindow))
+	return int64(*m.Config.ContextWindow)
 }
 
 func parseCommandUUID(id string) (pgtype.UUID, error) {
@@ -122,14 +149,4 @@ func parseCommandUUID(id string) (pgtype.UUID, error) {
 		return pgtype.UUID{}, fmt.Errorf("invalid uuid: %w", err)
 	}
 	return pgtype.UUID{Bytes: parsed, Valid: true}, nil
-}
-
-func formatTokens(n int64) string {
-	if n >= 1_000_000 {
-		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
-	}
-	if n >= 1_000 {
-		return fmt.Sprintf("%.1fK", float64(n)/1_000)
-	}
-	return strconv.FormatInt(n, 10)
 }

@@ -42,6 +42,33 @@ func TestNormalizeBotSettingsReadRow_ShowToolCallsInIMPropagates(t *testing.T) {
 	}
 }
 
+func TestNormalizeBotSettingsReadRow_CommandUILanguage(t *testing.T) {
+	t.Parallel()
+
+	// Explicit value propagates from the read row.
+	got := normalizeBotSettingsReadRow(sqlc.GetSettingsByBotIDRow{
+		Language:          "en",
+		CommandUiLanguage: "zh",
+		ReasoningEffort:   "medium",
+		HeartbeatInterval: 60,
+		CompactionRatio:   80,
+	})
+	if got.CommandUILanguage != "zh" {
+		t.Fatalf("CommandUILanguage = %q, want zh", got.CommandUILanguage)
+	}
+
+	// Empty value defaults to "auto" (mirrors the DB column default).
+	def := normalizeBotSettingsReadRow(sqlc.GetSettingsByBotIDRow{
+		Language:          "en",
+		ReasoningEffort:   "medium",
+		HeartbeatInterval: 60,
+		CompactionRatio:   80,
+	})
+	if def.CommandUILanguage != DefaultCommandUILanguage {
+		t.Fatalf("default CommandUILanguage = %q, want %q", def.CommandUILanguage, DefaultCommandUILanguage)
+	}
+}
+
 func TestUpsertRequestShowToolCallsInIM_PointerSemantics(t *testing.T) {
 	t.Parallel()
 
@@ -71,11 +98,25 @@ func TestUpsertRequestShowToolCallsInIM_PointerSemantics(t *testing.T) {
 func TestNormalizeBotSettingDefaultHeartbeatInterval(t *testing.T) {
 	t.Parallel()
 
-	got := normalizeBotSetting("en", "allow", false, "medium", false, 0, false, 0, 80)
+	got := normalizeBotSetting("en", "auto", "allow", false, "medium", false, 0, false, 0, 80)
 	if got.HeartbeatInterval != DefaultHeartbeatInterval {
 		t.Fatalf("heartbeat interval = %d, want %d", got.HeartbeatInterval, DefaultHeartbeatInterval)
 	}
 	if got.HeartbeatInterval != 1440 {
 		t.Fatalf("heartbeat interval = %d, want 1440", got.HeartbeatInterval)
+	}
+}
+
+func TestReasoningEffortAllowsFullModelLadder(t *testing.T) {
+	t.Parallel()
+
+	for _, effort := range []string{"none", "low", "medium", "high", "xhigh"} {
+		if !isValidReasoningEffort(effort) {
+			t.Fatalf("isValidReasoningEffort(%q) = false, want true", effort)
+		}
+		got := normalizeBotSetting("en", "auto", "allow", true, effort, false, 60, false, 0, 80)
+		if got.ReasoningEffort != effort {
+			t.Fatalf("normalizeBotSetting effort = %q, want %q", got.ReasoningEffort, effort)
+		}
 	}
 }

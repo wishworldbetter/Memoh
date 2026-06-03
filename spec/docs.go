@@ -12216,6 +12216,10 @@ const docTemplate = `{
                 "label": {
                     "type": "string"
                 },
+                "row": {
+                    "description": "Row groups buttons into keyboard rows for renderers that support grids\n(e.g. Telegram inline keyboards). Buttons sharing a Row render together;\nrows appear in ascending first-seen order. Renderers without grid support\nignore this field. 0 is the default (single row, prior behavior).",
+                    "type": "integer"
+                },
                 "type": {
                     "type": "string"
                 },
@@ -15690,6 +15694,9 @@ const docTemplate = `{
                 "chat_model_id": {
                     "type": "string"
                 },
+                "command_ui_language": {
+                    "type": "string"
+                },
                 "compaction_enabled": {
                     "type": "boolean"
                 },
@@ -15832,6 +15839,9 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "chat_model_id": {
+                    "type": "string"
+                },
+                "command_ui_language": {
                     "type": "string"
                 },
                 "compaction_enabled": {

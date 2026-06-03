@@ -1,9 +1,7 @@
 package command
 
 import (
-	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/memohai/memoh/internal/models"
@@ -12,51 +10,15 @@ import (
 
 func (h *Handler) buildModelGroup() *CommandGroup {
 	g := newCommandGroup("model", "Manage bot models")
+	g.DefaultAction = "list"
 	g.Register(SubCommand{
 		Name:  "list",
 		Usage: "list [provider_name] - List available chat models",
-		Handler: func(cc CommandContext) (string, error) {
+		ResultHandler: func(cc CommandContext) (*Result, error) {
 			if h.modelsService == nil {
-				return "Model service is not available.", nil
+				return &Result{Text: cc.T("cmd.model.unavailable")}, nil
 			}
-			items, err := h.modelsService.ListByType(cc.Ctx, models.ModelTypeChat)
-			if err != nil {
-				return "", err
-			}
-			filterProvider := ""
-			if len(cc.Args) > 0 {
-				filterProvider = strings.TrimSpace(strings.Join(cc.Args, " "))
-			}
-			items = h.filterModelsByProvider(cc, items, filterProvider)
-			if len(items) == 0 {
-				if filterProvider != "" {
-					return fmt.Sprintf("No chat models found for provider %q.", filterProvider), nil
-				}
-				return "No chat models found.", nil
-			}
-			settingsResp, _ := h.getBotSettings(cc)
-			sort.SliceStable(items, func(i, j int) bool {
-				return modelSortRank(items[i], settingsResp) < modelSortRank(items[j], settingsResp)
-			})
-			records := make([][]kv, 0, len(items))
-			for _, item := range items {
-				provName := h.resolveProviderName(cc, item.ProviderID)
-				label := item.Name
-				markers := modelMarkers(item.ID, settingsResp)
-				if len(markers) > 0 {
-					label += " [" + strings.Join(markers, ", ") + "]"
-				}
-				records = append(records, []kv{
-					{"Model", label},
-					{"Provider", provName},
-					{"Model ID", item.ModelID},
-				})
-			}
-			hint := "Use /model current to inspect active selections."
-			if filterProvider == "" {
-				hint = "Use /model list <provider_name> to narrow results."
-			}
-			return formatLimitedItems(records, defaultListLimit, hint), nil
+			return h.buildModelPickerResult(cc)
 		},
 	})
 	g.Register(SubCommand{
@@ -64,15 +26,15 @@ func (h *Handler) buildModelGroup() *CommandGroup {
 		Usage: "current - Show current chat and heartbeat models",
 		Handler: func(cc CommandContext) (string, error) {
 			if h.settingsService == nil {
-				return "Settings service is not available.", nil
+				return cc.T("cmd.model.unavailable"), nil
 			}
 			settingsResp, err := h.getBotSettings(cc)
 			if err != nil {
 				return "", err
 			}
-			return formatKV([]kv{
-				{"Chat Model", h.resolveModelName(cc, settingsResp.ChatModelID)},
-				{"Heartbeat Model", h.resolveModelName(cc, settingsResp.HeartbeatModelID)},
+			return formatKVTitled(cc.T("cmd.model.currentTitle"), []kv{
+				{cc.T("cmd.settings.fieldChatModel"), h.resolveModelName(cc, settingsResp.ChatModelID)},
+				{cc.T("cmd.settings.fieldHeartbeatModel"), h.resolveModelName(cc, settingsResp.HeartbeatModelID)},
 			}), nil
 		},
 	})
@@ -81,24 +43,38 @@ func (h *Handler) buildModelGroup() *CommandGroup {
 		Usage:   "set <model_id> | <provider_name> <model_name> - Set the chat model",
 		IsWrite: true,
 		Handler: func(cc CommandContext) (string, error) {
-			if len(cc.Args) < 1 {
-				return "Usage: /model set <model_id> | <provider_name> <model_name>", nil
+			var selectedID string
+			if cc.SelectID != "" {
+				// Selection from a picker button: resolve the stable model id.
+				// A miss means the model was removed between render and tap.
+				cand, ok, err := h.modelCandidateByDBID(cc, cc.SelectID)
+				if err != nil {
+					return "", err
+				}
+				if !ok {
+					return cc.T("cmd.model.listChanged"), nil
+				}
+				selectedID = cand.dbID
+			} else {
+				if len(cc.Args) < 1 {
+					return cc.T("cmd.model.setUsage"), nil
+				}
+				modelResp, err := h.findModelForSelection(cc, cc.Args)
+				if err != nil {
+					return "", err
+				}
+				selectedID = modelResp.ID
 			}
 			if h.settingsService == nil {
-				return "Settings service is not available.", nil
+				return cc.T("cmd.model.unavailable"), nil
 			}
 			before, _ := h.getBotSettings(cc)
-			modelResp, err := h.findModelForSelection(cc, cc.Args)
-			if err != nil {
+			if _, err := h.settingsService.UpsertBot(cc.Ctx, cc.BotID, settings.UpsertRequest{
+				ChatModelID: selectedID,
+			}); err != nil {
 				return "", err
 			}
-			_, err = h.settingsService.UpsertBot(cc.Ctx, cc.BotID, settings.UpsertRequest{
-				ChatModelID: modelResp.ID,
-			})
-			if err != nil {
-				return "", err
-			}
-			return formatChangedValue("Chat model", h.resolveModelName(cc, before.ChatModelID), h.resolveModelName(cc, modelResp.ID)), nil
+			return formatChangedValueT(cc, cc.T("cmd.settings.fieldChatModel"), h.resolveModelName(cc, before.ChatModelID), h.resolveModelName(cc, selectedID)), nil
 		},
 	})
 	g.Register(SubCommand{
@@ -107,10 +83,10 @@ func (h *Handler) buildModelGroup() *CommandGroup {
 		IsWrite: true,
 		Handler: func(cc CommandContext) (string, error) {
 			if len(cc.Args) < 1 {
-				return "Usage: /model set-heartbeat <model_id> | <provider_name> <model_name>", nil
+				return cc.T("cmd.model.setHeartbeatUsage"), nil
 			}
 			if h.settingsService == nil {
-				return "Settings service is not available.", nil
+				return cc.T("cmd.model.unavailable"), nil
 			}
 			before, _ := h.getBotSettings(cc)
 			modelResp, err := h.findModelForSelection(cc, cc.Args)
@@ -123,7 +99,7 @@ func (h *Handler) buildModelGroup() *CommandGroup {
 			if err != nil {
 				return "", err
 			}
-			return formatChangedValue("Heartbeat model", h.resolveModelName(cc, before.HeartbeatModelID), h.resolveModelName(cc, modelResp.ID)), nil
+			return formatChangedValueT(cc, cc.T("cmd.settings.fieldHeartbeatModel"), h.resolveModelName(cc, before.HeartbeatModelID), h.resolveModelName(cc, modelResp.ID)), nil
 		},
 	})
 	return g
@@ -137,32 +113,46 @@ func (h *Handler) resolveProviderName(cc CommandContext, providerID string) stri
 	if err != nil {
 		return providerID
 	}
-	return p.Name
+	// A blank provider name would drop the provider button from Telegram
+	// keyboards and render blank in summaries; fall back to the id.
+	if name := strings.TrimSpace(p.Name); name != "" {
+		return name
+	}
+	return providerID
+}
+
+// modelDisplayName returns a non-empty label for a model: its display name, or
+// its model_id when the (nullable) name column is blank. model_id is required
+// at write time, so this never yields "" — an empty label would be dropped from
+// Telegram inline keyboards and render blank for text-only users, making an
+// otherwise selectable model impossible to choose or discover.
+func modelDisplayName(m models.GetResponse) string {
+	if n := strings.TrimSpace(m.Name); n != "" {
+		return n
+	}
+	return m.ModelID
 }
 
 func (h *Handler) findModelByProviderAndName(cc CommandContext, providerName, modelName string) (models.GetResponse, error) {
-	provider, err := h.providersService.GetByName(cc.Ctx, providerName)
-	if err != nil {
-		return models.GetResponse{}, fmt.Errorf("provider %q not found", providerName)
-	}
-	chatModels, err := h.modelsService.ListByProviderIDAndType(cc.Ctx, provider.ID, models.ModelTypeChat)
+	chatModels, err := h.selectableChatModels(cc)
 	if err != nil {
 		return models.GetResponse{}, err
 	}
 	for _, m := range chatModels {
-		if strings.EqualFold(m.Name, modelName) || strings.EqualFold(m.ModelID, modelName) {
+		if strings.EqualFold(h.resolveProviderName(cc, m.ProviderID), providerName) &&
+			(strings.EqualFold(m.Name, modelName) || strings.EqualFold(m.ModelID, modelName)) {
 			return m, nil
 		}
 	}
-	return models.GetResponse{}, fmt.Errorf("model %q not found under provider %q", modelName, providerName)
+	return models.GetResponse{}, fmt.Errorf("%s", cc.T("cmd.model.notFoundUnderProvider", map[string]any{"name": fmt.Sprintf("%q", modelName), "provider": fmt.Sprintf("%q", providerName), "command": CmdRef("model list")}))
 }
 
 func (h *Handler) findModelForSelection(cc CommandContext, args []string) (models.GetResponse, error) {
 	if h.modelsService == nil {
-		return models.GetResponse{}, errors.New("model service is not available")
+		return models.GetResponse{}, fmt.Errorf("%s", cc.T("cmd.model.serviceUnavailable"))
 	}
 	if len(args) == 0 {
-		return models.GetResponse{}, errors.New("model identifier is required")
+		return models.GetResponse{}, fmt.Errorf("%s", cc.T("cmd.model.idRequired"))
 	}
 	if len(args) == 1 {
 		return h.findModelByIDOrName(cc, args[0])
@@ -171,13 +161,13 @@ func (h *Handler) findModelForSelection(cc CommandContext, args []string) (model
 }
 
 func (h *Handler) findModelByIDOrName(cc CommandContext, target string) (models.GetResponse, error) {
-	items, err := h.modelsService.ListByType(cc.Ctx, models.ModelTypeChat)
+	items, err := h.selectableChatModels(cc)
 	if err != nil {
 		return models.GetResponse{}, err
 	}
 	target = strings.TrimSpace(target)
 	if target == "" {
-		return models.GetResponse{}, errors.New("model identifier is required")
+		return models.GetResponse{}, fmt.Errorf("%s", cc.T("cmd.model.idRequired"))
 	}
 	for _, item := range items {
 		if strings.EqualFold(item.ModelID, target) {
@@ -192,7 +182,7 @@ func (h *Handler) findModelByIDOrName(cc CommandContext, target string) (models.
 	}
 	switch len(matches) {
 	case 0:
-		return models.GetResponse{}, fmt.Errorf("model %q not found", target)
+		return models.GetResponse{}, fmt.Errorf("%s", cc.T("cmd.model.notFound", map[string]any{"name": fmt.Sprintf("%q", target), "command": CmdRef("model list")}))
 	case 1:
 		return matches[0], nil
 	default:
@@ -200,8 +190,18 @@ func (h *Handler) findModelByIDOrName(cc CommandContext, target string) (models.
 		for _, item := range matches {
 			choices = append(choices, fmt.Sprintf("%s/%s", h.resolveProviderName(cc, item.ProviderID), item.ModelID))
 		}
-		return models.GetResponse{}, fmt.Errorf("model %q is ambiguous; use a model ID or provider-qualified name (%s)", target, strings.Join(choices, ", "))
+		return models.GetResponse{}, fmt.Errorf("%s", cc.T("cmd.model.ambiguous", map[string]any{
+			"name":       fmt.Sprintf("%q", target),
+			"candidates": strings.Join(choices, ", "),
+		}))
 	}
+}
+
+func (h *Handler) selectableChatModels(cc CommandContext) ([]models.GetResponse, error) {
+	if h.modelsService == nil {
+		return nil, fmt.Errorf("%s", cc.T("cmd.model.serviceUnavailable"))
+	}
+	return h.modelsService.ListEnabledByType(cc.Ctx, models.ModelTypeChat)
 }
 
 func (h *Handler) filterModelsByProvider(cc CommandContext, items []models.GetResponse, providerName string) []models.GetResponse {

@@ -1,46 +1,63 @@
 package command
 
-import (
-	"fmt"
-)
-
 func (h *Handler) buildHeartbeatGroup() *CommandGroup {
 	g := newCommandGroup("heartbeat", "View heartbeat logs")
 	g.DefaultAction = "logs"
 	g.Register(SubCommand{
 		Name:  "logs",
 		Usage: "logs - List recent heartbeat logs",
-		Handler: func(cc CommandContext) (string, error) {
-			items, _, err := h.heartbeatService.ListLogs(cc.Ctx, cc.BotID, 10, 0)
+		// UPSTREAM REPORT (backend, deferred): to offer the same --range time
+		// window as /usage, heartbeatService.ListLogs + ListHeartbeatLogsByBot
+		// need created_at From/To params. Pagination already covers "view all".
+		ResultHandler: func(cc CommandContext) (*Result, error) {
+			const pageSize = 10
+			page := cc.Page
+			if page < 0 {
+				page = 0
+			}
+			items, total, err := h.heartbeatService.ListLogs(cc.Ctx, cc.BotID, pageSize, page*pageSize)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
-			if len(items) == 0 {
-				return "No heartbeat logs found.", nil
+			// A page past the end (stale Next button, or a hand-typed
+			// "--page 999") fetches an empty slice while total>0, which would
+			// render an empty body under "Showing 0 of N". Clamp to the last
+			// page and refetch so the user lands on real data.
+			if total > 0 && page > 0 && page*pageSize >= int(total) {
+				page = (int(total) - 1) / pageSize
+				items, total, err = h.heartbeatService.ListLogs(cc.Ctx, cc.BotID, pageSize, page*pageSize)
+				if err != nil {
+					return nil, err
+				}
 			}
-			records := make([][]kv, 0, len(items))
+			if total == 0 {
+				return WithButtons(
+					&Result{Text: cc.T("cmd.heartbeat.empty")},
+					ListItem{Label: cc.T("cmd.heartbeat.section.settings"), Action: &ItemAction{Resource: "settings", Action: "get"}},
+				), nil
+			}
+			records := make([]listRecord, 0, len(items))
 			for _, item := range items {
 				dur := ""
 				if item.CompletedAt != nil {
-					dur = fmt.Sprintf("%.1fs", item.CompletedAt.Sub(item.StartedAt).Seconds())
+					dur = humanizeDuration(item.CompletedAt.Sub(item.StartedAt))
 				}
-				errMsg := ""
+				note := ""
 				if item.ErrorMessage != "" {
-					errMsg = truncate(item.ErrorMessage, 50)
+					note = truncate(item.ErrorMessage, 80)
 				}
-				rec := []kv{
-					{"Time", item.StartedAt.Format("01-02 15:04:05")},
-					{"Status", item.Status},
+				// Success is the common, expected outcome — flag only failures so
+				// the eye lands on the run that needs attention.
+				rec := []kv{{cc.T("cmd.heartbeat.fieldTime"), humanizeTimeT(cc, item.StartedAt)}}
+				if !isSuccessStatus(item.Status) {
+					rec = append(rec, kv{cc.T("cmd.common.fieldStatus"), humanizeStatusT(cc, item.Status)})
 				}
 				if dur != "" {
-					rec = append(rec, kv{"Duration", dur})
+					rec = append(rec, kv{cc.T("cmd.heartbeat.fieldDuration"), dur})
 				}
-				if errMsg != "" {
-					rec = append(rec, kv{"Error", errMsg})
-				}
-				records = append(records, rec)
+				records = append(records, listRecord{fields: rec, note: note})
 			}
-			return formatLimitedItems(records, 10, "Use the Web UI for older heartbeat logs."), nil
+			return buildPagedListResult(cc.T("cmd.heartbeat.title"), "heartbeat", "logs", nil, records, page, pageSize, int(total), cc.T("cmd.heartbeat.olderHint"), cc.L), nil
 		},
 	})
 	return g

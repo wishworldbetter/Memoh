@@ -59,6 +59,24 @@ func (s *Service) GetBot(ctx context.Context, botID string) (Settings, error) {
 	return settings, nil
 }
 
+// GetCommandUILanguage returns just the command_ui_language setting for a bot.
+// Avoids the second getDefaultEffect query that GetBot triggers — the locale
+// is resolved once per slash command + once per interactive callback tap, so
+// keeping it single-query matters for paginated lists where users tap Prev/Next
+// repeatedly. Returns the raw value (caller is responsible for i18n.Resolve to
+// map "auto"/unknown → server default).
+func (s *Service) GetCommandUILanguage(ctx context.Context, botID string) (string, error) {
+	pgID, err := db.ParseUUID(botID)
+	if err != nil {
+		return "", err
+	}
+	row, err := s.queries.GetSettingsByBotID(ctx, pgID)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(row.CommandUiLanguage), nil
+}
+
 func (s *Service) UpsertBot(ctx context.Context, botID string, req UpsertRequest) (Settings, error) {
 	if s.queries == nil {
 		return Settings{}, errors.New("settings queries not configured")
@@ -85,16 +103,20 @@ func (s *Service) UpsertBot(ctx context.Context, botID string, req UpsertRequest
 	if err != nil {
 		return Settings{}, err
 	}
-	current := normalizeBotSetting(botRow.Language, aclDefaultEffect, botRow.ReasoningEnabled, botRow.ReasoningEffort, botRow.HeartbeatEnabled, botRow.HeartbeatInterval, botRow.CompactionEnabled, botRow.CompactionThreshold, botRow.CompactionRatio)
+	current := normalizeBotSetting(botRow.Language, "", aclDefaultEffect, botRow.ReasoningEnabled, botRow.ReasoningEffort, botRow.HeartbeatEnabled, botRow.HeartbeatInterval, botRow.CompactionEnabled, botRow.CompactionThreshold, botRow.CompactionRatio)
 	if settingsRow, err := s.queries.GetSettingsByBotID(ctx, pgID); err == nil {
 		current.ToolApprovalConfig = parseToolApprovalConfig(settingsRow.ToolApprovalConfig)
 		current.DisplayEnabled = settingsRow.DisplayEnabled
+		current.CommandUILanguage = settingsRow.CommandUiLanguage
 	}
 	current.OverlayEnabled = overlayBindingRow.OverlayEnabled
 	current.OverlayProvider = strings.TrimSpace(overlayBindingRow.OverlayProvider)
 	current.OverlayConfig = normalizeJSONObject(overlayBindingRow.OverlayConfig)
 	if strings.TrimSpace(req.Language) != "" {
 		current.Language = strings.TrimSpace(req.Language)
+	}
+	if strings.TrimSpace(req.CommandUILanguage) != "" {
+		current.CommandUILanguage = strings.TrimSpace(req.CommandUILanguage)
 	}
 	if effect := strings.TrimSpace(req.AclDefaultEffect); effect != "" {
 		current.AclDefaultEffect = effect
@@ -259,6 +281,7 @@ func (s *Service) UpsertBot(ctx context.Context, botID string, req UpsertRequest
 		ID:                     pgID,
 		Timezone:               timezoneValue,
 		Language:               current.Language,
+		CommandUiLanguage:      current.CommandUILanguage,
 		ReasoningEnabled:       current.ReasoningEnabled,
 		ReasoningEffort:        current.ReasoningEffort,
 		HeartbeatEnabled:       current.HeartbeatEnabled,
@@ -314,9 +337,10 @@ func (s *Service) Delete(ctx context.Context, botID string) error {
 	return nil
 }
 
-func normalizeBotSetting(language string, aclDefaultEffect string, reasoningEnabled bool, reasoningEffort string, heartbeatEnabled bool, heartbeatInterval int32, compactionEnabled bool, compactionThreshold int32, compactionRatio int32) Settings {
+func normalizeBotSetting(language string, commandUILanguage string, aclDefaultEffect string, reasoningEnabled bool, reasoningEffort string, heartbeatEnabled bool, heartbeatInterval int32, compactionEnabled bool, compactionThreshold int32, compactionRatio int32) Settings {
 	settings := Settings{
 		Language:            strings.TrimSpace(language),
+		CommandUILanguage:   strings.TrimSpace(commandUILanguage),
 		AclDefaultEffect:    strings.TrimSpace(aclDefaultEffect),
 		ReasoningEnabled:    reasoningEnabled,
 		ReasoningEffort:     strings.TrimSpace(reasoningEffort),
@@ -329,6 +353,9 @@ func normalizeBotSetting(language string, aclDefaultEffect string, reasoningEnab
 	}
 	if settings.Language == "" {
 		settings.Language = DefaultLanguage
+	}
+	if settings.CommandUILanguage == "" {
+		settings.CommandUILanguage = DefaultCommandUILanguage
 	}
 	if settings.AclDefaultEffect == "" {
 		settings.AclDefaultEffect = "allow"
@@ -351,7 +378,7 @@ func normalizeBotSetting(language string, aclDefaultEffect string, reasoningEnab
 
 func isValidReasoningEffort(effort string) bool {
 	switch effort {
-	case "low", "medium", "high":
+	case "none", "low", "medium", "high", "xhigh":
 		return true
 	default:
 		return false
@@ -361,6 +388,7 @@ func isValidReasoningEffort(effort string) bool {
 func normalizeBotSettingsReadRow(row sqlc.GetSettingsByBotIDRow) Settings {
 	return normalizeBotSettingsFields(
 		row.Language,
+		row.CommandUiLanguage,
 		row.ReasoningEnabled,
 		row.ReasoningEffort,
 		row.HeartbeatEnabled,
@@ -391,6 +419,7 @@ func normalizeBotSettingsReadRow(row sqlc.GetSettingsByBotIDRow) Settings {
 func normalizeBotSettingsWriteRow(row sqlc.UpsertBotSettingsRow) Settings {
 	return normalizeBotSettingsFields(
 		row.Language,
+		row.CommandUiLanguage,
 		row.ReasoningEnabled,
 		row.ReasoningEffort,
 		row.HeartbeatEnabled,
@@ -420,6 +449,7 @@ func normalizeBotSettingsWriteRow(row sqlc.UpsertBotSettingsRow) Settings {
 
 func normalizeBotSettingsFields(
 	language string,
+	commandUILanguage string,
 	reasoningEnabled bool,
 	reasoningEffort string,
 	heartbeatEnabled bool,
@@ -445,7 +475,7 @@ func normalizeBotSettingsFields(
 	overlayEnabled bool,
 	overlayConfig []byte,
 ) Settings {
-	settings := normalizeBotSetting(language, "", reasoningEnabled, reasoningEffort, heartbeatEnabled, heartbeatInterval, compactionEnabled, compactionThreshold, compactionRatio)
+	settings := normalizeBotSetting(language, commandUILanguage, "", reasoningEnabled, reasoningEffort, heartbeatEnabled, heartbeatInterval, compactionEnabled, compactionThreshold, compactionRatio)
 	if timezone.Valid {
 		settings.Timezone = timezone.String
 	}

@@ -680,6 +680,13 @@ export type BotsUserGrant = {
 
 export type ChannelAction = {
     label?: string;
+    /**
+     * Row groups buttons into keyboard rows for renderers that support grids
+     * (e.g. Telegram inline keyboards). Buttons sharing a Row render together;
+     * rows appear in ascending first-seen order. Renderers without grid support
+     * ignore this field. 0 is the default (single row, prior behavior).
+     */
+    row?: number;
     type?: string;
     url?: string;
     value?: string;
@@ -2039,6 +2046,7 @@ export type SessionSession = {
 export type SettingsSettings = {
     acl_default_effect?: string;
     chat_model_id?: string;
+    command_ui_language?: string;
     compaction_enabled?: boolean;
     compaction_model_id?: string;
     compaction_ratio?: number;
@@ -2090,6 +2098,7 @@ export type SettingsToolApprovalFilePolicy = {
 export type SettingsUpsertRequest = {
     acl_default_effect?: string;
     chat_model_id?: string;
+    command_ui_language?: string;
     compaction_enabled?: boolean;
     compaction_model_id?: string;
     compaction_ratio?: number;

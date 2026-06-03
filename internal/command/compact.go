@@ -3,6 +3,7 @@ package command
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 
@@ -11,6 +12,12 @@ import (
 	"github.com/memohai/memoh/internal/models"
 	"github.com/memohai/memoh/internal/providers"
 )
+
+// errCompactNoModel is a sentinel returned by buildCompactConfig when neither
+// a compaction model nor a chat model is configured. The Handler catches it
+// via errors.Is and surfaces a localized user message; other (internal) errors
+// flow through friendlyCommandError's looksLikeInternalError path.
+var errCompactNoModel = errors.New("compact: no compaction or chat model configured")
 
 func (h *Handler) buildCompactGroup() *CommandGroup {
 	g := newCommandGroup("compact", "Compact conversation context")
@@ -21,30 +28,41 @@ func (h *Handler) buildCompactGroup() *CommandGroup {
 		IsWrite: true,
 		Handler: func(cc CommandContext) (string, error) {
 			if h.compactionService == nil {
-				return "Compaction service is not available.", nil
+				return cc.T("cmd.compact.unavailable"), nil
 			}
 			sessionID := cc.SessionID
 			if sessionID == "" {
 				botUUID, err := db.ParseUUID(cc.BotID)
 				if err != nil {
-					return "", fmt.Errorf("invalid bot id: %w", err)
+					// cc.BotID is framework-set so this only fires if the
+					// framework injects a malformed UUID — a deep internal
+					// bug. Log the diagnostic and surface a generic friendly
+					// message rather than leaking "invalid UUID length: 5"
+					// to the user verbatim.
+					if h.logger != nil {
+						h.logger.Warn("compact: parse bot id failed", slog.String("bot_id", cc.BotID), slog.Any("error", err))
+					}
+					return cc.T("cmd.error.generic", map[string]any{"command": CmdRef("compact")}), nil
 				}
 				latestUUID, err := h.queries.GetLatestSessionIDByBot(cc.Ctx, botUUID)
 				if err != nil {
-					return "No active session found.", nil
+					return cc.T("cmd.session.noActive"), nil
 				}
 				sessionID = uuid.UUID(latestUUID.Bytes).String()
 			}
 
 			cfg, err := h.buildCompactConfig(cc, sessionID)
 			if err != nil {
+				if errors.Is(err, errCompactNoModel) {
+					return cc.T("cmd.compact.noModel"), nil
+				}
 				return "", err
 			}
 
 			if err := h.compactionService.RunCompactionSync(cc.Ctx, cfg); err != nil {
 				return "", fmt.Errorf("compaction failed: %w", err)
 			}
-			return "Context compaction completed successfully.", nil
+			return cc.T("cmd.compact.done"), nil
 		},
 	})
 	return g
@@ -60,7 +78,7 @@ func (h *Handler) buildCompactConfig(cc CommandContext, sessionID string) (compa
 		modelID = botSettings.ChatModelID
 	}
 	if modelID == "" {
-		return compaction.TriggerConfig{}, errors.New("no compaction or chat model configured for this bot")
+		return compaction.TriggerConfig{}, errCompactNoModel
 	}
 
 	compactModel, err := h.modelsService.GetByID(cc.Ctx, modelID)

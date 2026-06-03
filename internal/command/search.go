@@ -9,40 +9,36 @@ import (
 
 func (h *Handler) buildSearchGroup() *CommandGroup {
 	g := newCommandGroup("search", "Manage search provider")
+	g.DefaultAction = "list" // bare /search lands on the provider list (current marked)
 	g.Register(SubCommand{
 		Name:  "list",
 		Usage: "list - List all search providers",
-		Handler: func(cc CommandContext) (string, error) {
+		ResultHandler: func(cc CommandContext) (*Result, error) {
 			if h.searchProvService == nil {
-				return "Search provider service is not available.", nil
+				return &Result{Text: cc.T("cmd.search.unavailable")}, nil
 			}
 			items, err := h.searchProvService.List(cc.Ctx, "")
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if len(items) == 0 {
-				return "No search providers found.", nil
+				return &Result{Text: cc.T("cmd.search.empty")}, nil
 			}
 			settingsResp, _ := h.getBotSettings(cc)
-			currentRecords := make([][]kv, 0, 1)
-			otherRecords := make([][]kv, 0, len(items))
+			currentRecords := make([]listRecord, 0, 1)
+			otherRecords := make([]listRecord, 0, len(items))
 			for _, item := range items {
-				label := item.Name
-				record := []kv{
-					{"Name", label},
-					{"Provider", item.Provider},
-				}
+				rec := providerListRecord(cc, item.Name, item.Provider, false, item.ID == settingsResp.SearchProviderID)
+				// Tap a provider to switch to it — no typing of /search set.
+				rec.action = &ItemAction{Resource: "search", Action: "set", Args: []string{item.Name}}
 				if item.ID == settingsResp.SearchProviderID {
-					label += " [current]"
-					record[0].value = label
-					currentRecords = append(currentRecords, record)
+					currentRecords = append(currentRecords, rec)
 					continue
 				}
-				otherRecords = append(otherRecords, record)
+				otherRecords = append(otherRecords, rec)
 			}
 			currentRecords = append(currentRecords, otherRecords...)
-			records := currentRecords
-			return formatLimitedItems(records, defaultListLimit, "Use /search current to inspect the active provider."), nil
+			return buildListResult(cc.T("cmd.search.title"), "search", "list", nil, currentRecords, cc.Page, defaultListLimit, cc.L), nil
 		},
 	})
 	g.Register(SubCommand{
@@ -50,13 +46,16 @@ func (h *Handler) buildSearchGroup() *CommandGroup {
 		Usage: "current - Show the current search provider",
 		Handler: func(cc CommandContext) (string, error) {
 			if h.settingsService == nil {
-				return "Settings service is not available.", nil
+				return cc.T("cmd.search.unavailable"), nil
 			}
 			settingsResp, err := h.getBotSettings(cc)
 			if err != nil {
 				return "", err
 			}
-			return formatKV([]kv{{"Search Provider", h.resolveSearchProviderName(cc, settingsResp.SearchProviderID)}}), nil
+			if strings.TrimSpace(settingsResp.SearchProviderID) == "" {
+				return cc.T("cmd.search.noneSet", map[string]any{"list": CmdRef("search list"), "set": CmdRef("search set <name>")}), nil
+			}
+			return cc.T("cmd.search.active", map[string]any{"name": h.resolveSearchProviderName(cc, settingsResp.SearchProviderID)}), nil
 		},
 	})
 	g.Register(SubCommand{
@@ -65,10 +64,10 @@ func (h *Handler) buildSearchGroup() *CommandGroup {
 		IsWrite: true,
 		Handler: func(cc CommandContext) (string, error) {
 			if len(cc.Args) < 1 {
-				return "Usage: /search set <name>", nil
+				return cc.T("cmd.search.setUsage"), nil
 			}
 			if h.settingsService == nil {
-				return "Settings service is not available.", nil
+				return cc.T("cmd.search.unavailable"), nil
 			}
 			name := cc.Args[0]
 			before, _ := h.getBotSettings(cc)
@@ -84,10 +83,10 @@ func (h *Handler) buildSearchGroup() *CommandGroup {
 					if err != nil {
 						return "", err
 					}
-					return formatChangedValue("Search provider", h.resolveSearchProviderName(cc, before.SearchProviderID), item.Name), nil
+					return formatChangedValueT(cc, cc.T("cmd.search.label"), h.resolveSearchProviderName(cc, before.SearchProviderID), item.Name), nil
 				}
 			}
-			return fmt.Sprintf("Search provider %q not found.", name), nil
+			return cc.T("cmd.search.notFound", map[string]any{"name": fmt.Sprintf("%q", name), "command": CmdRef("search list")}), nil
 		},
 	})
 	return g

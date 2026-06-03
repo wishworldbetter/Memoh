@@ -1,7 +1,6 @@
 package command
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/memohai/memoh/internal/acl"
@@ -14,29 +13,31 @@ func (h *Handler) buildAccessGroup() *CommandGroup {
 		Name:  "show",
 		Usage: "show - Show current identity, write access, and chat ACL context",
 		Handler: func(cc CommandContext) (string, error) {
-			writeAccess := "no"
+			writeAccess := cc.T("cmd.common.no")
 			if cc.WriteAccess {
-				writeAccess = "yes"
+				writeAccess = cc.T("cmd.common.yes")
 			}
 
 			pairs := []kv{
-				{"Channel Identity", fallbackValue(cc.ChannelIdentityID)},
-				{"Linked User", fallbackValue(cc.UserID)},
-				{"Bot Role", fallbackValue(cc.Role)},
-				{"Write Commands", writeAccess},
-				{"Channel", fallbackValue(cc.ChannelType)},
-				{"Conversation Type", fallbackValue(cc.ConversationType)},
-				{"Conversation ID", fallbackValue(cc.ConversationID)},
-				{"Thread ID", fallbackValue(cc.ThreadID)},
+				{cc.T("cmd.access.fieldBotRole"), fallbackValueT(cc, cc.Role)},
+				{cc.T("cmd.access.fieldWriteCommands"), writeAccess},
+				{cc.T("cmd.access.fieldChannel"), fallbackValueT(cc, cc.ChannelType)},
+				{cc.T("cmd.access.fieldConversationType"), fallbackValueT(cc, cc.ConversationType)},
+				// Identifier rows vanish when empty rather than printing "(none)";
+				// they are support/debug detail, not the facts the user came for.
+				{cc.T("cmd.access.fieldChannelIdentity"), strings.TrimSpace(cc.ChannelIdentityID)},
+				{cc.T("cmd.access.fieldLinkedUser"), strings.TrimSpace(cc.UserID)},
+				{cc.T("cmd.access.fieldConversationID"), strings.TrimSpace(cc.ConversationID)},
+				{cc.T("cmd.access.fieldThreadID"), strings.TrimSpace(cc.ThreadID)},
 			}
 			if strings.TrimSpace(cc.RouteID) != "" {
-				pairs = append(pairs, kv{"Route ID", cc.RouteID})
+				pairs = append(pairs, kv{cc.T("cmd.access.fieldRouteID"), cc.RouteID})
 			}
 			if strings.TrimSpace(cc.SessionID) != "" {
-				pairs = append(pairs, kv{"Session ID", cc.SessionID})
+				pairs = append(pairs, kv{cc.T("cmd.access.fieldSessionID"), cc.SessionID})
 			}
 
-			aclStatus := "unavailable"
+			aclStatus := cc.T("cmd.common.unavailable")
 			if h.aclEvaluator != nil && strings.TrimSpace(cc.ChannelType) != "" {
 				allowed, err := h.aclEvaluator.Evaluate(cc.Ctx, acl.EvaluateRequest{
 					BotID:             cc.BotID,
@@ -50,29 +51,34 @@ func (h *Handler) buildAccessGroup() *CommandGroup {
 				})
 				switch {
 				case err != nil:
-					aclStatus = "error: " + err.Error()
+					// Don't leak raw DB/driver error text into user output.
+					aclStatus = cc.T("cmd.common.error")
 				case allowed:
-					aclStatus = "allow"
+					aclStatus = cc.T("cmd.common.allowed")
 				default:
-					aclStatus = "deny"
+					aclStatus = cc.T("cmd.common.denied")
 				}
 			}
-			pairs = append(pairs, kv{"Chat ACL", aclStatus})
+			pairs = append(pairs, kv{cc.T("cmd.access.fieldChatACL"), aclStatus})
 
-			return formatKV(pairs), nil
+			return formatKVTitled(cc.T("cmd.access.title"), pairs), nil
 		},
 	})
 	return g
 }
 
-func fallbackValue(value string) string {
+func fallbackValueT(cc CommandContext, value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "(none)"
+		return cc.T("cmd.common.none")
 	}
 	return value
 }
 
-func formatChangedValue(label, before, after string) string {
-	return fmt.Sprintf("%s: %s -> %s", label, fallbackValue(before), fallbackValue(after))
+func formatChangedValueT(cc CommandContext, label, before, after string) string {
+	a := fallbackValueT(cc, after)
+	if strings.EqualFold(strings.TrimSpace(before), strings.TrimSpace(after)) {
+		return cc.T("cmd.common.alreadySet", map[string]any{"label": label, "value": renderValue(a)})
+	}
+	return cc.T("cmd.common.changedTo", map[string]any{"label": label, "value": renderValue(a)})
 }

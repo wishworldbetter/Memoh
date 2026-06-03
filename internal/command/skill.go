@@ -1,30 +1,36 @@
 package command
 
+import "strings"
+
 func (h *Handler) buildSkillGroup() *CommandGroup {
 	g := newCommandGroup("skill", "View bot skills")
 	g.DefaultAction = "list"
 	g.Register(SubCommand{
 		Name:  "list",
 		Usage: "list - List all skills",
-		Handler: func(cc CommandContext) (string, error) {
+		ResultHandler: func(cc CommandContext) (*Result, error) {
 			if h.skillLoader == nil {
-				return "Skill loading is not available.", nil
+				return &Result{Text: cc.T("cmd.skill.unavailable")}, nil
 			}
 			items, err := h.skillLoader.LoadSkills(cc.Ctx, cc.BotID)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if len(items) == 0 {
-				return "No skills found.", nil
+				return &Result{Text: cc.T("cmd.skill.empty")}, nil
 			}
-			records := make([][]kv, 0, len(items))
+			records := make([]listRecord, 0, len(items))
 			for _, item := range items {
-				records = append(records, []kv{
-					{"Name", item.Name},
-					{"Description", truncate(item.Description, 60)},
+				note := truncate(item.Description, 80)
+				if strings.EqualFold(strings.TrimSpace(item.Description), strings.TrimSpace(item.Name)) {
+					note = "" // description repeats the name; don't print it twice
+				}
+				records = append(records, listRecord{
+					fields: []kv{{cc.T("cmd.common.fieldName"), item.Name}},
+					note:   note,
 				})
 			}
-			return formatItems(records), nil
+			return buildListResult(cc.T("cmd.skill.title"), "skill", "list", nil, records, cc.Page, defaultListLimit, cc.L), nil
 		},
 	})
 	return g
