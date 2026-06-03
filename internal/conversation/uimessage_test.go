@@ -10,7 +10,7 @@ import (
 	messagepkg "github.com/memohai/memoh/internal/message"
 )
 
-func TestConvertMessagesToUITurnsGroupsAssistantToolAndFiltersCurrentConversationDelivery(t *testing.T) {
+func TestConvertMessagesToUITurnsGroupsAssistantToolAndKeepsCurrentConversationDelivery(t *testing.T) {
 	baseTime := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	messages := []messagepkg.Message{
 		{
@@ -99,8 +99,8 @@ func TestConvertMessagesToUITurnsGroupsAssistantToolAndFiltersCurrentConversatio
 	if assistantTurn.Role != "assistant" {
 		t.Fatalf("expected assistant turn, got %#v", assistantTurn)
 	}
-	if len(assistantTurn.Messages) != 4 {
-		t.Fatalf("expected 4 assistant messages, got %d", len(assistantTurn.Messages))
+	if len(assistantTurn.Messages) != 5 {
+		t.Fatalf("expected 5 assistant messages, got %d", len(assistantTurn.Messages))
 	}
 
 	if assistantTurn.Messages[0].Type != UIMessageReasoning || assistantTurn.Messages[0].Content != "thinking" {
@@ -112,20 +112,20 @@ func TestConvertMessagesToUITurnsGroupsAssistantToolAndFiltersCurrentConversatio
 	if assistantTurn.Messages[1].Running == nil || *assistantTurn.Messages[1].Running {
 		t.Fatalf("expected tool block to be completed: %#v", assistantTurn.Messages[1])
 	}
-	if assistantTurn.Messages[2].Type != UIMessageAttachments || len(assistantTurn.Messages[2].Attachments) != 1 {
-		t.Fatalf("unexpected attachment block: %#v", assistantTurn.Messages[2])
+	if assistantTurn.Messages[2].Type != UIMessageTool || assistantTurn.Messages[2].Name != "send" {
+		t.Fatalf("expected current conversation delivery tool to be retained: %#v", assistantTurn.Messages[2])
 	}
-	if assistantTurn.Messages[2].Attachments[0].Type != "image" || assistantTurn.Messages[2].Attachments[0].BotID != "bot-1" {
-		t.Fatalf("unexpected attachment payload: %#v", assistantTurn.Messages[2].Attachments[0])
+	if assistantTurn.Messages[2].Running == nil || *assistantTurn.Messages[2].Running {
+		t.Fatalf("expected send tool block to be completed: %#v", assistantTurn.Messages[2])
 	}
-	if assistantTurn.Messages[3].Type != UIMessageText || assistantTurn.Messages[3].Content != "done" {
-		t.Fatalf("unexpected trailing text block: %#v", assistantTurn.Messages[3])
+	if assistantTurn.Messages[3].Type != UIMessageAttachments || len(assistantTurn.Messages[3].Attachments) != 1 {
+		t.Fatalf("unexpected attachment block: %#v", assistantTurn.Messages[3])
 	}
-
-	for _, block := range assistantTurn.Messages {
-		if block.Type == UIMessageTool && block.Name == "send" {
-			t.Fatalf("expected current conversation delivery tool to be filtered out")
-		}
+	if assistantTurn.Messages[3].Attachments[0].Type != "image" || assistantTurn.Messages[3].Attachments[0].BotID != "bot-1" {
+		t.Fatalf("unexpected attachment payload: %#v", assistantTurn.Messages[3].Attachments[0])
+	}
+	if assistantTurn.Messages[4].Type != UIMessageText || assistantTurn.Messages[4].Content != "done" {
+		t.Fatalf("unexpected trailing text block: %#v", assistantTurn.Messages[4])
 	}
 }
 
