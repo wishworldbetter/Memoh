@@ -1040,4 +1040,191 @@ describe('chat-list store', () => {
     await first
     await second
   })
+
+  it('keeps a session busy while a background exec task is running', async () => {
+    api.fetchSessions.mockResolvedValueOnce([
+      { id: 'session-bg', bot_id: 'bot-1', title: 'Background task', type: 'chat' },
+    ])
+    api.fetchMessagesUI.mockResolvedValueOnce([
+      {
+        role: 'assistant',
+        id: 'turn-bg',
+        timestamp: '2026-06-05T08:00:00.000Z',
+        messages: [
+          {
+            id: 1,
+            type: 'tool',
+            name: 'exec',
+            tool_call_id: 'call-bg',
+            input: { command: 'npm install' },
+            output: {
+              structuredContent: {
+                status: 'background_started',
+                task_id: 'bg_task_1',
+                output_file: '/tmp/memoh-bg/bg_task_1.log',
+              },
+            },
+            background_task: {
+              task_id: 'bg_task_1',
+              status: 'running',
+              command: 'npm install',
+              output_file: '/tmp/memoh-bg/bg_task_1.log',
+            },
+            running: true,
+          },
+        ],
+      },
+    ])
+
+    const store = useChatStore()
+
+    await store.selectBot('bot-1')
+
+    expect(store.streaming).toBe(false)
+    expect(store.busy).toBe(true)
+    expect(store.isSessionBusy('session-bg')).toBe(true)
+
+    const blocked = await store.sendMessage('second request')
+    expect(blocked).toMatchObject({ ok: false, stage: 'startup' })
+    expect(sentWSMessages).toHaveLength(0)
+
+    messageEventsHandler?.({
+      type: 'background_task',
+      bot_id: 'bot-1',
+      event: 'completed',
+      task: {
+        task_id: 'bg_task_1',
+        session_id: 'session-bg',
+        status: 'completed',
+        command: 'npm install',
+        output_file: '/tmp/memoh-bg/bg_task_1.log',
+      },
+    } as MessageStreamEvent)
+
+    expect(store.busy).toBe(true)
+    expect(store.backgroundHandoff).toBe(true)
+    expect(store.isSessionBusy('session-bg')).toBe(true)
+
+    const stillBlocked = await store.sendMessage('third request')
+    expect(stillBlocked).toMatchObject({ ok: false, stage: 'startup' })
+    expect(sentWSMessages).toHaveLength(0)
+
+    messageEventsHandler?.({
+      type: 'agent_stream',
+      bot_id: 'bot-1',
+      stream: {
+        type: 'start',
+        stream_id: 'stream-after-bg',
+        session_id: 'session-bg',
+      },
+    } as MessageStreamEvent)
+    expect(store.backgroundHandoff).toBe(false)
+    expect(store.busy).toBe(true)
+
+    messageEventsHandler?.({
+      type: 'agent_stream',
+      bot_id: 'bot-1',
+      stream: {
+        type: 'message',
+        stream_id: 'stream-after-bg',
+        session_id: 'session-bg',
+        data: { id: 1, type: 'text', content: 'done' },
+      },
+    } as MessageStreamEvent)
+
+    expect(store.messages).toHaveLength(1)
+    expect(store.messages[0]).toMatchObject({
+      role: 'assistant',
+      messages: [
+        expect.objectContaining({ type: 'tool', toolCallId: 'call-bg' }),
+        expect.objectContaining({ type: 'text', content: 'done' }),
+      ],
+    })
+
+    messageEventsHandler?.({
+      type: 'agent_stream',
+      bot_id: 'bot-1',
+      stream: {
+        type: 'end',
+        stream_id: 'stream-after-bg',
+        session_id: 'session-bg',
+      },
+    } as MessageStreamEvent)
+    await flushPromises()
+
+    expect(store.busy).toBe(false)
+    expect(store.isSessionBusy('session-bg')).toBe(false)
+  })
+
+  it('keeps thinking after a live exec tool starts a background task without a background_task field', async () => {
+    api.fetchSessions.mockResolvedValueOnce([
+      { id: 'session-live-bg', bot_id: 'bot-1', title: 'Live background task', type: 'chat' },
+    ])
+    api.fetchMessagesUI.mockResolvedValueOnce([])
+
+    const store = useChatStore()
+    await store.selectBot('bot-1')
+
+    messageEventsHandler?.({
+      type: 'agent_stream',
+      bot_id: 'bot-1',
+      stream: {
+        type: 'start',
+        stream_id: 'stream-live-bg',
+        session_id: 'session-live-bg',
+      },
+    } as MessageStreamEvent)
+    messageEventsHandler?.({
+      type: 'agent_stream',
+      bot_id: 'bot-1',
+      stream: {
+        type: 'message',
+        stream_id: 'stream-live-bg',
+        session_id: 'session-live-bg',
+        data: {
+          id: 1,
+          type: 'tool',
+          name: 'exec',
+          tool_call_id: 'call-live-bg',
+          input: { command: 'sleep 10 && echo done' },
+          output: {
+            structuredContent: {
+              status: 'background_started',
+              task_id: 'bg_live_1',
+              output_file: '/tmp/memoh-bg/bg_live_1.log',
+            },
+          },
+          running: false,
+        },
+      },
+    } as MessageStreamEvent)
+    messageEventsHandler?.({
+      type: 'agent_stream',
+      bot_id: 'bot-1',
+      stream: {
+        type: 'end',
+        stream_id: 'stream-live-bg',
+        session_id: 'session-live-bg',
+      },
+    } as MessageStreamEvent)
+
+    const assistant = store.messages.find(message => message.role === 'assistant')
+    const tool = assistant?.role === 'assistant' ? assistant.messages[0] : undefined
+
+    expect(store.streaming).toBe(false)
+    expect(store.busy).toBe(true)
+    expect(store.isSessionBusy('session-live-bg')).toBe(true)
+    expect(assistant).toMatchObject({ streaming: false })
+    expect(tool).toMatchObject({
+      type: 'tool',
+      toolCallId: 'call-live-bg',
+      running: true,
+      done: false,
+      backgroundTask: {
+        taskId: 'bg_live_1',
+        status: 'running',
+        command: 'sleep 10 && echo done',
+      },
+    })
+  })
 })

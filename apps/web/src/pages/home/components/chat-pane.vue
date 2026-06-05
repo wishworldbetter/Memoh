@@ -74,6 +74,7 @@
                   :message="msg"
                   :session-type="activeSession?.type"
                   :bot-id="currentBotId"
+                  :handoff-thinking="msg.id === backgroundHandoffAssistantId"
                   :on-open-media="galleryOpenBySrc"
                   :on-reply-click="handleReplyJump"
                   :root-el="scrollEl"
@@ -243,7 +244,7 @@
                     class="h-auto min-h-8 w-full justify-start whitespace-normal rounded-md px-2.5 py-1.5 text-left text-xs"
                     :class="selectedPendingUserInputOptionId === option.id ? 'bg-muted text-foreground' : 'text-foreground hover:bg-accent'"
                     :title="option.description || option.label"
-                    :disabled="streaming"
+                    :disabled="busy"
                     :aria-pressed="selectedPendingUserInputOptionId === option.id"
                     @click="selectPendingUserInputOption(option)"
                   >
@@ -265,7 +266,7 @@
                     v-model="pendingUserInputAnswer"
                     class="h-8 min-w-0 flex-1 rounded-md border border-input bg-background px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     :placeholder="pendingUserInputOptionPlaceholder"
-                    :disabled="streaming"
+                    :disabled="busy"
                     @keydown.enter.prevent="handlePendingUserInputSubmit"
                   >
                 </div>
@@ -275,7 +276,7 @@
                     size="sm"
                     variant="ghost"
                     class="text-xs text-muted-foreground hover:text-foreground"
-                    :disabled="streaming"
+                    :disabled="busy"
                     @click="handlePendingUserInputCancel"
                   >
                     {{ $t('chat.tools.cancelUserInput') }}
@@ -284,7 +285,7 @@
                     type="button"
                     size="sm"
                     class="text-xs"
-                    :disabled="streaming || !canSubmitPendingUserInput"
+                    :disabled="busy || !canSubmitPendingUserInput"
                     @click="handlePendingUserInputSubmit"
                   >
                     {{ $t('chat.tools.submitUserInput') }}
@@ -549,7 +550,7 @@
                   type="button"
                   size="sm"
                   variant="ghost"
-                  :disabled="!currentBotId || activeChatReadOnly || streaming"
+                  :disabled="!currentBotId || activeChatReadOnly || busy"
                   aria-label="Attach files"
                   @click="fileInput?.click()"
                 >
@@ -567,7 +568,7 @@
                 />
 
                 <Button
-                  v-if="!streaming"
+                  v-if="!busy"
                   type="button"
                   size="icon"
                   :disabled="(!inputText.trim() && !pendingFiles.length) || !currentBotId || activeChatReadOnly"
@@ -583,8 +584,9 @@
                   size="icon"
                   variant="destructive"
                   class="size-7 rounded-full"
-                  aria-label="Stop generating response"
-                  @click="chatStore.abort()"
+                  :aria-label="streaming ? 'Stop generating response' : 'Waiting for background task'"
+                  :aria-disabled="!streaming"
+                  @click="streaming && chatStore.abort()"
                 >
                   <LoaderCircle class="size-3.5 animate-spin" />
                 </Button>
@@ -666,6 +668,8 @@ const inputDrafts = useStorage<Record<string, string>>('chat-input-drafts', {})
 const {
   messages,
   streaming,
+  busy,
+  backgroundHandoff,
   currentBotId,
   bots,
   activeSession,
@@ -811,7 +815,15 @@ const activeACPProjectLabel = computed(() => {
   const parts = path.split('/').filter(Boolean)
   return path ? parts[parts.length - 1] ?? path : t('chat.noProject')
 })
-const canChangeAgent = computed(() => !streaming.value && messages.value.length === 0)
+const canChangeAgent = computed(() => !busy.value && messages.value.length === 0)
+const backgroundHandoffAssistantId = computed(() => {
+  if (!backgroundHandoff.value) return ''
+  for (let i = messages.value.length - 1; i >= 0; i -= 1) {
+    const message = messages.value[i]
+    if (message?.role === 'assistant') return message.id
+  }
+  return ''
+})
 const activeSessionId = computed(() => activeSession.value?.id ?? '')
 const {
   runtime: acpRuntime,
@@ -1675,7 +1687,7 @@ async function handleSend() {
   // isAutoScroll.value = true
   const text = inputText.value.trim()
   const files = [...pendingFiles.value]
-  if ((!text && !files.length) || streaming.value || activeChatReadOnly.value) return
+  if ((!text && !files.length) || busy.value || activeChatReadOnly.value) return
   if (activeIsACP.value && files.length) {
     composerError.value = t('chat.acpAttachmentsUnsupported')
     return

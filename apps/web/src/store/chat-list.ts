@@ -130,6 +130,7 @@ interface PendingAssistantStream {
   assistantTurn: ChatAssistantTurn
   botId: string
   sessionId: string
+  messageIdOffset: number
   done: boolean
   resolve: () => void
   reject: (err: Error) => void
@@ -213,6 +214,7 @@ export const useChatStore = defineStore('chat', () => {
     return activeSessionIds[0] ?? null
   })
   const streaming = computed(() => isSessionStreaming(sessionId.value))
+  const busy = computed(() => isSessionBusy(sessionId.value))
   const sessions = ref<SessionSummary[]>([])
   const loading = ref(false)
   const loadingChats = ref(false)
@@ -229,6 +231,7 @@ export const useChatStore = defineStore('chat', () => {
   // and any open file viewers without polling.
   const fsChangedAt = ref(0)
   const FS_MUTATING_TOOLS = new Set(['write', 'edit', 'exec'])
+  const BACKGROUND_HANDOFF_HOLD_MS = 3000
 
   function bumpFsChangedAtIfFsMutation(message: UIMessage) {
     if (message.type !== 'tool') return
@@ -243,7 +246,9 @@ export const useChatStore = defineStore('chat', () => {
   let refreshPromise: { key: string; promise: Promise<void> } | null = null
   let sessionListRefreshPromise: { botId: string; promise: Promise<void> } | null = null
   const pendingBackgroundEvents = new Map<string, BackgroundTask[]>()
-  const latestBackgroundTasks = new Map<string, BackgroundTask>()
+  const latestBackgroundTasks = reactive(new Map<string, BackgroundTask>())
+  const backgroundHandoffExpires = reactive(new Map<string, number>())
+  const backgroundHandoffTimers = new Map<string, ReturnType<typeof setTimeout>>()
   // Open chat tabs share this store, so keep a small per-session view cache.
   // Switching tabs saves/restores from here; the active session remains the
   // only live `messages` array rendered by ChatPane.
@@ -482,6 +487,27 @@ export const useChatStore = defineStore('chat', () => {
     return pickString(structured, 'task_id', 'taskId') || pickString(result, 'task_id', 'taskId')
   }
 
+  function backgroundTaskFromExecToolOutput(msg: UIToolMessage): BackgroundTask | null {
+    if (msg.name !== 'exec' || !msg.output) return null
+    const structured = structuredToolResult(msg.output)
+    const taskId = pickString(structured, 'task_id', 'taskId')
+    if (!taskId) return null
+    const input = asRecord(msg.input)
+    return normalizeBackgroundTask({
+      task_id: taskId,
+      status: pickString(structured, 'status'),
+      event: pickString(structured, 'event'),
+      bot_id: pickString(structured, 'bot_id', 'botId'),
+      session_id: pickString(structured, 'session_id', 'sessionId'),
+      command: pickString(structured, 'command') || pickString(input, 'command'),
+      output_file: pickString(structured, 'output_file', 'outputFile'),
+      output_tail: pickString(structured, 'output_tail', 'outputTail', 'tail'),
+      exit_code: structured.exit_code ?? structured.exitCode,
+      duration: pickString(structured, 'duration'),
+      stalled: structured.stalled === true,
+    })
+  }
+
   function mergeBackgroundTaskIntoToolBlock(block: ToolCallBlock, task: BackgroundTask) {
     const merged = mergeBackgroundTask(block.backgroundTask, task)
     block.backgroundTask = merged
@@ -523,7 +549,7 @@ export const useChatStore = defineStore('chat', () => {
   function normalizeUIMessage(msg: UIMessage): ContentBlock {
     switch (msg.type) {
       case 'tool': {
-        const backgroundTask = normalizeBackgroundTask(msg.background_task)
+        const backgroundTask = normalizeBackgroundTask(msg.background_task) ?? backgroundTaskFromExecToolOutput(msg)
         const block: ToolCallBlock = {
           ...msg,
           toolCallId: msg.tool_call_id,
@@ -865,6 +891,71 @@ export const useChatStore = defineStore('chat', () => {
     return activeStreamIdsForSession(targetSessionId).length > 0
   }
 
+  function clearBackgroundHandoff(targetSessionId?: string | null) {
+    const sid = (targetSessionId ?? '').trim()
+    if (!sid) return
+    const timer = backgroundHandoffTimers.get(sid)
+    if (timer) clearTimeout(timer)
+    backgroundHandoffTimers.delete(sid)
+    backgroundHandoffExpires.delete(sid)
+  }
+
+  function startBackgroundHandoff(targetSessionId?: string | null) {
+    const sid = (targetSessionId ?? '').trim()
+    if (!sid) return
+    clearBackgroundHandoff(sid)
+    backgroundHandoffExpires.set(sid, Date.now() + BACKGROUND_HANDOFF_HOLD_MS)
+    backgroundHandoffTimers.set(sid, setTimeout(() => {
+      clearBackgroundHandoff(sid)
+    }, BACKGROUND_HANDOFF_HOLD_MS))
+  }
+
+  function isSessionBackgroundHandoff(targetSessionId?: string | null): boolean {
+    const sid = (targetSessionId ?? '').trim()
+    if (!sid) return false
+    const expiresAt = backgroundHandoffExpires.get(sid)
+    return typeof expiresAt === 'number' && expiresAt > Date.now()
+  }
+
+  function hasActiveBackgroundTaskInItems(items: ChatMessage[]): boolean {
+    for (const item of items) {
+      if (item.role === 'system' && item.kind === 'background_task') {
+        if (isBackgroundTaskActive(item.backgroundTask)) return true
+        continue
+      }
+      if (item.role !== 'assistant') continue
+      for (const block of item.messages) {
+        if (block.type === 'tool' && isBackgroundTaskActive(block.backgroundTask)) {
+          return true
+        }
+      }
+    }
+    return false
+  }
+
+  function hasActiveBackgroundTaskForSession(targetSessionId?: string | null): boolean {
+    const sid = (targetSessionId ?? '').trim()
+    if (!sid) return false
+    if (sid === (sessionId.value ?? '').trim()) {
+      return hasActiveBackgroundTaskInItems(messages)
+    }
+
+    const key = sessionMessageKey(currentBotId.value, sid)
+    const cached = key ? sessionMessageStates.get(key) : undefined
+    if (cached && hasActiveBackgroundTaskInItems(cached.items)) return true
+
+    for (const task of latestBackgroundTasks.values()) {
+      if (task.sessionId === sid && isBackgroundTaskActive(task)) return true
+    }
+    return false
+  }
+
+  function isSessionBusy(targetSessionId?: string | null): boolean {
+    return isSessionStreaming(targetSessionId)
+      || hasActiveBackgroundTaskForSession(targetSessionId)
+      || isSessionBackgroundHandoff(targetSessionId)
+  }
+
   function streamIdForEvent(event: StreamIdentity, targetSessionId?: string): string {
     const explicit = (event.stream_id ?? '').trim()
     if (explicit) return explicit
@@ -873,7 +964,7 @@ export const useChatStore = defineStore('chat', () => {
     return activeIds.length === 1 ? activeIds[0]! : fallbackStreamId(sid)
   }
 
-  function trackAssistantStream(streamId: string, assistantTurn: ChatAssistantTurn, botId: string, targetSessionId: string): Promise<void> {
+  function trackAssistantStream(streamId: string, assistantTurn: ChatAssistantTurn, botId: string, targetSessionId: string, messageIdOffset = 0): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const id = streamId.trim()
       if (!id) {
@@ -889,6 +980,7 @@ export const useChatStore = defineStore('chat', () => {
         assistantTurn,
         botId,
         sessionId: targetSessionId.trim(),
+        messageIdOffset,
         done: false,
         resolve,
         reject,
@@ -987,6 +1079,17 @@ export const useChatStore = defineStore('chat', () => {
     }
   }
 
+  function backgroundHandoffAssistantTurn(targetSessionId: string): ChatAssistantTurn | null {
+    const sid = targetSessionId.trim()
+    if (!sid || sid !== (sessionId.value ?? '').trim()) return null
+    if (!isSessionBackgroundHandoff(sid)) return null
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const item = messages[i]
+      if (item?.role === 'assistant') return item
+    }
+    return null
+  }
+
   function ensureDiscussStream(streamId: string, targetSessionId?: string): PendingAssistantStream {
     const id = streamIdForEvent({ stream_id: streamId, session_id: targetSessionId }, targetSessionId)
     const existing = getAssistantStream(id)
@@ -995,18 +1098,25 @@ export const useChatStore = defineStore('chat', () => {
     }
     const sid = (targetSessionId ?? sessionId.value ?? '').trim()
     const bid = (currentBotId.value ?? '').trim()
-    const assistantTurn = createOptimisticAssistantTurn()
-    appendTurnToSession(bid, sid, assistantTurn)
-    void trackAssistantStream(id, assistantTurn, bid, sid).catch((error: Error) => {
+    const handoffTurn = backgroundHandoffAssistantTurn(sid)
+    const assistantTurn = handoffTurn ?? createOptimisticAssistantTurn()
+    const messageIdOffset = handoffTurn ? nextAssistantMessageId(handoffTurn) : 0
+    assistantTurn.streaming = true
+    if (!handoffTurn) appendTurnToSession(bid, sid, assistantTurn)
+    clearBackgroundHandoff(sid)
+    void trackAssistantStream(id, assistantTurn, bid, sid, messageIdOffset).catch((error: Error) => {
       finalizeStreamFailure(assistantTurn, bid, sid, error)
     })
     return getAssistantStream(id)!
   }
 
-  function upsertAssistantUIMessage(turn: ChatAssistantTurn, message: UIMessage) {
-    const normalized = normalizeUIMessage(message)
+  function upsertAssistantUIMessage(turn: ChatAssistantTurn, message: UIMessage, messageIdOffset = 0) {
+    const shifted = messageIdOffset > 0
+      ? { ...message, id: message.id + messageIdOffset }
+      : message
+    const normalized = normalizeUIMessage(shifted)
     turn.messages = upsertById(turn.messages, normalized)
-    bumpFsChangedAtIfFsMutation(message)
+    bumpFsChangedAtIfFsMutation(shifted)
   }
 
   function nextAssistantMessageId(turn: ChatAssistantTurn): number {
@@ -1116,7 +1226,8 @@ export const useChatStore = defineStore('chat', () => {
         ensureDiscussStream(streamId, sid)
         break
       case 'message':
-        upsertAssistantUIMessage(ensureDiscussStream(streamId, sid).assistantTurn, event.data)
+        const activeStream = ensureDiscussStream(streamId, sid)
+        upsertAssistantUIMessage(activeStream.assistantTurn, event.data, activeStream.messageIdOffset)
         break
       case 'end':
         const endedSession = getAssistantStream(streamId)
@@ -1124,7 +1235,7 @@ export const useChatStore = defineStore('chat', () => {
         const endedSessionId = sid || endedSession?.sessionId
         pruneEmptyAssistantTurnIfPending(streamId)
         resolveAssistantStream(streamId)
-        loading.value = isSessionStreaming(sessionId.value)
+        loading.value = isSessionBusy(sessionId.value)
         void refreshCurrentSession(endedBotId, endedSessionId)
         break
       case 'error': {
@@ -1132,7 +1243,7 @@ export const useChatStore = defineStore('chat', () => {
         const message = event.message || 'stream error'
         const stage: SendMessageStage = hasVisibleAssistantBlocks(session.assistantTurn) ? 'stream' : 'startup'
         rejectAssistantStream(streamId, new StreamFailureError(message, stage))
-        loading.value = isSessionStreaming(sessionId.value)
+        loading.value = isSessionBusy(sessionId.value)
         break
       }
     }
@@ -1183,6 +1294,9 @@ export const useChatStore = defineStore('chat', () => {
     pendingAssistantStreams.clear()
     pendingBackgroundEvents.clear()
     latestBackgroundTasks.clear()
+    for (const timer of backgroundHandoffTimers.values()) clearTimeout(timer)
+    backgroundHandoffTimers.clear()
+    backgroundHandoffExpires.clear()
     sessionMessageStates.clear()
     ephemeralAssistantErrors.clear()
   }
@@ -1271,8 +1385,7 @@ export const useChatStore = defineStore('chat', () => {
     refreshTimer = setTimeout(() => {
       refreshTimer = null
       const sidNow = (sessionId.value ?? '').trim()
-      const streamActive = isSessionStreaming(sidNow)
-      if (streamActive) return
+      if (isSessionStreaming(sidNow)) return
       void refreshCurrentSession()
     }, delay)
   }
@@ -1315,6 +1428,9 @@ export const useChatStore = defineStore('chat', () => {
     const sid = (sessionId.value ?? '').trim()
 
     const task = rememberBackgroundTask(incoming)
+    const taskActive = isBackgroundTaskActive(task)
+    const taskSessionId = task.sessionId || sid
+    if (!taskActive) startBackgroundHandoff(taskSessionId)
 
     if (incoming.sessionId && sid && incoming.sessionId !== sid) {
       applyBackgroundTaskToCachedMessages(targetBotId, task)
@@ -1331,7 +1447,7 @@ export const useChatStore = defineStore('chat', () => {
       queuePendingBackgroundEvent(task)
     }
 
-    if (!isBackgroundTaskActive(task) || task.status === 'stalled') {
+    if (!taskActive || task.status === 'stalled') {
       scheduleRefreshCurrentSession(task.sessionId, 250)
     }
   }
@@ -1423,7 +1539,7 @@ export const useChatStore = defineStore('chat', () => {
       if (activeWs?.connected) activeWs.abort(streamId)
       rejectAssistantStream(streamId, abortError)
     }
-    loading.value = isSessionStreaming(sessionId.value)
+    loading.value = isSessionBusy(sessionId.value)
   }
 
   function abortAllAssistantStreams() {
@@ -2080,7 +2196,7 @@ export const useChatStore = defineStore('chat', () => {
 
   async function sendMessage(text: string, attachments?: ChatAttachment[]): Promise<SendMessageResult> {
     const trimmed = text.trim()
-    if ((!trimmed && !attachments?.length) || streaming.value || !currentBotId.value) return { ok: false, stage: 'startup' }
+    if ((!trimmed && !attachments?.length) || busy.value || !currentBotId.value) return { ok: false, stage: 'startup' }
 
     loading.value = true
     let assistantTurn: ChatAssistantTurn | null = null
@@ -2163,7 +2279,7 @@ export const useChatStore = defineStore('chat', () => {
   async function respondToolApproval(approval: UIToolApproval, decision: 'approve' | 'reject') {
     const bid = currentBotId.value ?? ''
     const sid = sessionId.value ?? ''
-    if (!bid || !sid || !approval.approval_id || streaming.value) return
+    if (!bid || !sid || !approval.approval_id || busy.value) return
     const ws = ensureWebSocket(bid)
     const streamId = createStreamId()
     const assistantTurn = createOptimisticAssistantTurn()
@@ -2202,7 +2318,7 @@ export const useChatStore = defineStore('chat', () => {
   ) {
     const bid = currentBotId.value ?? ''
     const sid = sessionId.value ?? ''
-    if (!bid || !sid || !userInput.user_input_id || streaming.value) return
+    if (!bid || !sid || !userInput.user_input_id || busy.value) return
     const ws = ensureWebSocket(bid)
     const streamId = createStreamId()
     const previousUserInputStates = snapshotUserInputStates(userInput.user_input_id)
@@ -2256,6 +2372,8 @@ export const useChatStore = defineStore('chat', () => {
   return {
     messages,
     streaming,
+    busy,
+    backgroundHandoff: computed(() => isSessionBackgroundHandoff(sessionId.value)),
     streamingSessionId,
     sessions,
     acpRuntimeStatuses,
@@ -2274,6 +2392,8 @@ export const useChatStore = defineStore('chat', () => {
     activeSession,
     activeChatReadOnly,
     isSessionStreaming,
+    isSessionBusy,
+    isSessionBackgroundHandoff,
     loading,
     loadingChats,
     loadingOlder,
