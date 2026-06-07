@@ -696,20 +696,31 @@ func (p *SessionPool) startRuntime(ctx context.Context, h *runtimeHandle, opts s
 	}
 
 	mode := acpclient.SetupMode(setup.Mode)
-	if mode == "" {
-		mode = acpclient.SetupModeAPIKey
+	if !setup.ModeSet {
+		// Legacy bots created before setup_mode was introduced have no explicit
+		// mode. For local workspaces the host already has Codex/Claude configured,
+		// so default to self (use host credentials). For container workspaces
+		// default to api_key to preserve the original validation behaviour.
+		if workspaceInfo.Backend == bridge.WorkspaceBackendLocal {
+			mode = acpclient.SetupModeSelf
+		} else {
+			mode = acpclient.SetupModeAPIKey
+		}
 	}
-	if workspaceInfo.Backend != "local" && mode != acpclient.SetupModeSelf {
+	if mode != acpclient.SetupModeSelf {
 		if err := validateManagedFields(profile, setup.Managed, mode); err != nil {
 			return fail(err)
 		}
 	}
+	// Managed env (Claude Code BYOK tokens) is injected for every backend.
+	// Local processes inherit the host env and only get our overrides appended;
+	// managedProcessEnv returns nil for self mode and for Codex (which is
+	// configured via CODEX_HOME files instead of env), so this is safe to run
+	// for local desktop workspaces too.
 	var env []string
-	if workspaceInfo.Backend != "local" {
-		env, err = managedProcessEnv(profile, setup.Managed, mode)
-		if err != nil {
-			return fail(err)
-		}
+	env, err = managedProcessEnv(profile, setup.Managed, mode)
+	if err != nil {
+		return fail(err)
 	}
 
 	toolHTTPURL, err := p.resolveToolHTTPURL(opts.ToolHTTPURL, workspaceInfo)
